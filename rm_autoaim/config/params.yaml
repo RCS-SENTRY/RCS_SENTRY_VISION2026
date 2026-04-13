@@ -1,0 +1,135 @@
+# =============================================================================
+# rm_autoaim 节点参数配置
+# =============================================================================
+
+rm_autoaim:
+  ros__parameters:
+
+    # ---- 相机内参矩阵 (3×3, 行优先) — 2026-04-08 物理标定 ----
+    # fx=2342.39  fy=2336.43  cx=722.79  cy=546.67
+    camera_matrix: [
+      2342.38801,    0.0,      722.7857,
+         0.0,      2336.42764, 546.67109,
+         0.0,         0.0,        1.0
+    ]
+
+    # ---- 畸变系数 [k1, k2, p1, p2, k3] — 2026-04-08 物理标定 ----
+    dist_coeffs: [-0.076970, 0.101924, 0.001169, 0.002179, 0.000000]
+
+    # ---- 相机→云台外参 ----
+    # R_cam_to_gimbal: 手眼标定结果 (TSAI, 26组, orth_err=3.25e-16)
+    # 相机系: x=右, y=下, z=前 | 云台系: x=前, y=左, z=上
+    # 对应相机安装偏角: yaw≈83° pitch≈86° roll≈-4° (从理想90°有~4°偏差)
+    # ★ 行优先 (Row-Major): 逐行填入, C++ 使用 (i,j) = arr[i*3+j] 防呆赋值
+    r_cam_to_gimbal: [
+      0.04414099384, -0.007345851179,  0.9989983039,
+      -0.9970764997,   0.06210530348,   0.04451275219,
+      -0.06237007689, -0.9980425691,   -0.004582985762
+    ]
+ 
+    # t_cam_to_gimbal: 相机在云台坐标系中的物理位置 (单位: m)
+    # 实测: 前方100mm, 左侧0mm, 上方525mm
+    t_cam_to_gimbal: [0.1, 0.0, 0.525]
+
+    # ---- 装甲板物理尺寸 (单位: m) ----
+    armor_small_width:  0.135
+    armor_small_height: 0.055
+    armor_large_width:  0.225
+    armor_large_height: 0.055
+
+    # ---- 坐标系 ----
+    world_frame_id: "gimbal_odom"
+
+    # ---- IMU 缓冲区保留时长 (秒) ----
+    imu_buffer_duration: 2.0
+
+    # ---- PnP 求解 ----
+    pnp_refine_iterative: true
+
+    # ---- 订阅话题 ----
+    imu_topic: "/imu/data"
+    gimbal_status_topic: "/gimbal_status"
+
+    # ---- 跟踪坐标系模式 ----
+    # false: Tracker/Aimer 在“当前云台系”工作，Aimer 会用 /gimbal_status
+    #        把相对视线角转换成绝对 /gimbal_cmd 角后再发布
+    # true : Tracker/Aimer 在 IMU 世界/惯性系工作，inverseKinematics 直接输出绝对角
+    # 无论哪种模式，最终 /gimbal_cmd.target_yaw/target_pitch 都必须与
+    # /gimbal_status.gimbal_yaw/gimbal_pitch 处于同一绝对角语义
+    use_imu_world_transform: false
+
+    # ---- 预测一致性护栏 ----
+    # 同时计算 raw PnP 直瞄角 与 tracker 预测角；
+    # 若两者差距离谱，说明 tracker 或坐标链路已失真：
+    #   - 本帧改用 raw PnP 指向
+    #   - 强制 fire_control=0
+    enable_prediction_consistency_guard: true
+    prediction_consistency_guard_deg: 25.0
+
+    # ---- 射线一致性护栏 ----
+    # 用像素中心射线(内参+外参旋转)直接解出角度，与 raw PnP 角做对照。
+    # 若两者差距过大，说明 PnP 平面解/几何链路异常：
+    #   - 本帧改用 ray 角输出
+    #   - 强制 fire_control=0
+    enable_ray_consistency_guard: true
+    ray_consistency_guard_deg: 10.0
+
+    # =====================================================================
+    # IMM-UKF Tracker 参数
+    # tune_ukf.py Top1 (2026-04-10): J=0.5058
+    # =====================================================================
+    ukf:
+      alpha: 0.1
+      beta: 2.0
+      kappa: 0.0
+      q_pos: 0.1
+      q_vel: 0.1
+      q_r: 0.005
+      q_phi: 0.05
+      q_omega: 0.05
+      r_pos: 0.1
+      markov_00: 0.95
+      markov_11: 0.95
+      init_prob_cv: 0.6
+
+    # =====================================================================
+    # Aimer 参数 — 物理前馈 + 火控
+    # =====================================================================
+
+    # ---- 物理常量 ----
+    gravity: 0.0                # 重力加速度 (m/s²)
+    bullet_speed_default: 24.0       # 默认弹丸速度 (m/s)
+    fire_delay: 0.10                 # 系统总延迟 (s), 含图像+串口+云台
+    # yaw 常量偏置 (rad): 正=命令更向左, 负=命令更向右
+    # 若静态打点“落在目标左边”, 就填负值; 若“落在目标右边”, 就填正值
+    yaw_offset: -0.002
+
+    # ---- 坐标系契约 ----
+    # 若下位机 pitch 正方向与数学解算相反，则在发布最终命令前取反
+    # 当前下位机反馈 gimbal_pitch 为“抬头为负(向下为正)”，因此保持 false
+    pitch_invert: false
+
+    # ---- 火控 Gate 1: 炮管对齐容差 ----
+    # 解算角度与下位机反馈角度的差值阈值 (rad)
+    # 0.03 rad ≈ 1.7°
+    fire_tolerance: 0.03
+
+    # ---- 火控 Gate 2: 装甲板相位窗口 (Spin Killer) ----
+    # 装甲板法线与枪管射线夹角容差 (deg)
+    armor_facing_tolerance: 30.0
+    # CTRV 模型概率高于此值才启用 Gate 2
+    # 低于此值 = 目标不在旋转 → 自动旁路
+    ctrv_threshold: 0.5
+
+    # ---- 火控 Gate 3: 收敛/距离保护 ----
+    # Tracker 最少收敛帧数 (防止初始发散时开火)
+    fire_min_frames: 5
+    # 最大开火距离 (m)
+    fire_max_distance: 8.0
+
+    # ---- 弹道补偿 LUT 系数 (预留) ----
+    # pitch_offset = k0 + k1*d + k2*d² + 解析模型
+    # 默认全 0, 后续可手动标定
+    pitch_offset_k0: -0.222
+    pitch_offset_k1: 0.0
+    pitch_offset_k2: 0.0

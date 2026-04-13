@@ -1,0 +1,20 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>sentry_bt</name>
+  <version>0.1.0</version>
+  <description>BehaviorTree-based sentry decision node for RoboMaster 2026.</description>
+  <maintainer email="rm@xmu.edu.cn">XMU RCS</maintainer>
+  <license>Apache-2.0</license>
+
+  <buildtool_depend>ament_cmake</buildtool_depend>
+
+  <depend>rclcpp</depend>
+  <depend>rm_interfaces</depend>
+  <depend>behaviortree_cpp_v3</depend>
+  <depend>tinyxml2</depend>
+
+  <export>
+    <build_type>ament_cmake</build_type>
+  </export>
+</package>

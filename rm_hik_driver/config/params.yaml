@@ -1,0 +1,21 @@
+# =============================================================================
+# rm_hik_driver 参数配置
+# =============================================================================
+rm_hik_driver:
+  ros__parameters:
+    # ---- 相机标识 ----
+    camera_name: ""                      # 相机序列号/名称（多相机时区分）
+
+    # ---- 曝光参数 ----
+    exposure_time: 2000                  # 曝光时间 (μs), 手动模式生效
+    gain: 10.0                           # 增益 (dB), 手动模式生效
+    is_auto_exposure: false              # true=自动曝光+自动增益
+
+    # ---- 帧率 ----
+    target_fps: 150                      # 目标帧率 (受相机型号限制)
+
+    # ---- 坐标系 ----
+    frame_id: "camera_optical_frame"     # 发布图像的 frame_id
+
+    # ---- 标定文件 ----
+    camera_info_url: "package://rm_hik_driver/config/hik_camera_info.yaml"

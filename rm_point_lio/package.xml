@@ -1,0 +1,27 @@
+<?xml version="1.0"?>
+<package format="3">
+  <name>rm_point_lio</name>
+  <version>0.1.0</version>
+  <description>
+    Clean wrapper package for Point-LIO on RM Sentry.
+    Provides configuration overrides and launch files for MID-360 LiDAR.
+    Does NOT modify the upstream point_lio source code.
+  </description>
+  <maintainer email="rm@xmu.edu.cn">XMU RCS</maintainer>
+  <license>BSD</license>
+
+  <buildtool_depend>ament_cmake</buildtool_depend>
+
+  <!-- Runtime only — no C++ code, pure config/launch wrapper -->
+  <exec_depend>point_lio</exec_depend>
+  <exec_depend>rclpy</exec_depend>
+  <exec_depend>rviz2</exec_depend>
+  <exec_depend>tf2_ros</exec_depend>
+  <exec_depend>nav_msgs</exec_depend>
+  <exec_depend>sensor_msgs</exec_depend>
+  <exec_depend>geometry_msgs</exec_depend>
+
+  <export>
+    <build_type>ament_cmake</build_type>
+  </export>
+</package>

@@ -1,0 +1,27 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>rm_bringup</name>
+  <version>0.1.0</version>
+  <description>RM Sentry 一键启动包 — 统一 Launch 所有节点</description>
+  <maintainer email="rm@xmu.edu.cn">RM Team</maintainer>
+  <license>MIT</license>
+
+  <buildtool_depend>ament_cmake</buildtool_depend>
+
+  <exec_depend>launch</exec_depend>
+  <exec_depend>launch_ros</exec_depend>
+  <exec_depend>rm_hw_bridge</exec_depend>
+  <exec_depend>rm_hik_driver</exec_depend>
+  <exec_depend>rm_vision</exec_depend>
+  <exec_depend>rm_autoaim</exec_depend>
+  <exec_depend>rm_livox_driver</exec_depend>
+  <exec_depend>rm_point_lio</exec_depend>
+  <exec_depend>rm_global_localization</exec_depend>
+  <exec_depend>sentry_bt</exec_depend>
+  <exec_depend>tf2_ros</exec_depend>
+
+  <export>
+    <build_type>ament_cmake</build_type>
+  </export>
+</package>

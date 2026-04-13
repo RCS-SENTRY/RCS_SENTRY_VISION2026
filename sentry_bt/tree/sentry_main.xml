@@ -1,0 +1,211 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<root BTCPP_format="4" main_tree_to_execute="MainTree">
+    <BehaviorTree ID="MainTree">
+        <ReactiveSequence name="main_loop">
+            <UpdateBlackboard/>
+            <SubTree ID="HardConstraintGuard"/>
+            <EvaluateTacticalState tactical_state="{tactical_state}"/>
+            <ReactiveFallback name="main_dispatch">
+                <Sequence name="emergency_branch">
+                    <NeedEmergencySafety/>
+                    <SetSafePolicies/>
+                </Sequence>
+                <Sequence name="revive_branch">
+                    <IsDead/>
+                    <Fallback name="revive_fallback">
+                        <Sequence name="confirm_revive">
+                            <CanConfirmRevive/>
+                            <ConfirmRevive/>
+                        </Sequence>
+                        <Sequence name="buy_revive">
+                            <ShouldBuyImmediateRevive/>
+                            <ConfirmImmediateRevive/>
+                        </Sequence>
+                        <WaitRevive/>
+                    </Fallback>
+                </Sequence>
+                <SubTree ID="RuleActionSubtree"/>
+                <Switch6 variable="{tactical_state}" case_1="RETREAT" case_2="RESUPPLY" case_3="HOLD" case_4="ENGAGE" case_5="SEARCH" case_6="REPOSITION">
+                    <SubTree ID="RetreatSubtree"/>
+                    <SubTree ID="ResupplySubtree"/>
+                    <SubTree ID="HoldSubtree"/>
+                    <SubTree ID="EngageSubtree"/>
+                    <SubTree ID="SearchSubtree"/>
+                    <SubTree ID="RepositionSubtree"/>
+                    <SubTree ID="SearchSubtree"/>
+                </Switch6>
+            </ReactiveFallback>
+            <Sequence name="executor_layer">
+                <ApplyPostureDecision/>
+                <ApplyFireDecision/>
+                <ApplySpinDecision/>
+                <ApplySupercapDecision/>
+                <PublishGoalToNavigator/>
+            </Sequence>
+        </ReactiveSequence>
+    </BehaviorTree>
+    <BehaviorTree ID="HardConstraintGuard">
+        <Sequence name="HardConstraintGuard">
+            <ForceSuccess>
+                <HeatGuard/>
+            </ForceSuccess>
+            <ForceSuccess>
+                <PowerGuard/>
+            </ForceSuccess>
+            <ForceSuccess>
+                <AmmoGuard/>
+            </ForceSuccess>
+            <ForceSuccess>
+                <SupercapGuard/>
+            </ForceSuccess>
+            <ForceSuccess>
+                <PostureCooldownGuard/>
+            </ForceSuccess>
+            <ForceSuccess>
+                <RuleCmdGuard/>
+            </ForceSuccess>
+        </Sequence>
+    </BehaviorTree>
+    <BehaviorTree ID="RuleActionSubtree">
+        <Sequence name="RuleActionSubtree">
+            <EvaluateRuleAction rule_action_type="{rule_action_type}"/>
+            <Switch6 variable="{rule_action_type}" case_1="EXCHANGE_AMMO_AT_POINT" case_2="REMOTE_AMMO" case_3="REMOTE_HP" case_4="ACTIVATE_ENERGY" case_5="CLAIM_PERIODIC_AMMO" case_6="SWITCH_POSTURE">
+                <ExchangeAmmoAtPoint/>
+                <RemoteExchangeAmmo/>
+                <RemoteExchangeHP/>
+                <ActivateEnergyMechanism/>
+                <ClaimPeriodicAmmo/>
+                <HandlePostureSwitchRequest/>
+                <NoRuleAction/>
+            </Switch6>
+        </Sequence>
+    </BehaviorTree>
+    <BehaviorTree ID="RetreatSubtree">
+        <Sequence name="RetreatSubtree">
+            <ResetGoalCandidates/>
+            <EvaluateRetreatGoals/>
+            <ChooseBestGoal/>
+            <SetPreferredPosture posture="MOVE"/>
+            <SetPreferredFirePolicy fire_policy="HOLD_FIRE"/>
+            <SetPreferredSpinMode spin_mode="OFF"/>
+            <SetPreferredSupercapMode supercap_mode="BURST"/>
+        </Sequence>
+    </BehaviorTree>
+    <BehaviorTree ID="ResupplySubtree">
+        <Sequence name="ResupplySubtree">
+            <ResetGoalCandidates/>
+            <EvaluateResupplyGoals/>
+            <ChooseBestGoal/>
+            <SetPreferredPosture posture="MOVE"/>
+            <SetPreferredFirePolicy fire_policy="HOLD_FIRE"/>
+            <SetPreferredSpinMode spin_mode="OFF"/>
+            <SetPreferredSupercapMode supercap_mode="KEEP"/>
+        </Sequence>
+    </BehaviorTree>
+    <BehaviorTree ID="HoldSubtree">
+        <Sequence name="HoldSubtree">
+            <ResetGoalCandidates/>
+            <EvaluateHoldGoals/>
+            <ChooseBestGoal/>
+            <SetPreferredPosture posture="DEFENSE"/>
+            <SetPreferredFirePolicy fire_policy="NORMAL"/>
+            <SetPreferredSpinMode spin_mode="OFF"/>
+            <SetPreferredSupercapMode supercap_mode="OFF"/>
+        </Sequence>
+    </BehaviorTree>
+    <BehaviorTree ID="EngageSubtree">
+        <Sequence name="EngageSubtree">
+            <ResetGoalCandidates/>
+            <SetCombatPosturePreference/>
+            <UpdateCombatFirePolicy/>
+            <SetCombatSpinPreference/>
+            <SetCombatSupercapPreference/>
+            <EvaluateEngageGoals/>
+            <ChooseBestGoal/>
+        </Sequence>
+    </BehaviorTree>
+    <BehaviorTree ID="SearchSubtree">
+        <Sequence name="SearchSubtree">
+            <ResetGoalCandidates/>
+            <EvaluateSearchGoals/>
+            <ChooseBestGoal/>
+            <SetPreferredPosture posture="MOVE"/>
+            <SetPreferredFirePolicy fire_policy="CONSERVATIVE"/>
+            <SetPreferredSpinMode spin_mode="ON"/>
+            <SetPreferredSupercapMode supercap_mode="OFF"/>
+        </Sequence>
+    </BehaviorTree>
+    <BehaviorTree ID="RepositionSubtree">
+        <Sequence name="RepositionSubtree">
+            <ResetGoalCandidates/>
+            <EvaluateRepositionGoals/>
+            <ChooseBestGoal/>
+            <SetPreferredPosture posture="MOVE"/>
+            <SetPreferredFirePolicy fire_policy="CONSERVATIVE"/>
+            <SetPreferredSpinMode spin_mode="OFF"/>
+            <SetPreferredSupercapMode supercap_mode="BURST"/>
+        </Sequence>
+    </BehaviorTree>
+    <TreeNodesModel>
+        <Action ID="ActivateEnergyMechanism"/>
+        <Condition ID="AmmoGuard"/>
+        <Action ID="ApplyFireDecision"/>
+        <Action ID="ApplyPostureDecision"/>
+        <Action ID="ApplySpinDecision"/>
+        <Action ID="ApplySupercapDecision"/>
+        <Condition ID="CanConfirmRevive"/>
+        <Action ID="ChooseBestGoal"/>
+        <Action ID="ClaimPeriodicAmmo"/>
+        <Action ID="ConfirmImmediateRevive"/>
+        <Action ID="ConfirmRevive"/>
+        <Action ID="EvaluateEngageGoals"/>
+        <Action ID="EvaluateHoldGoals"/>
+        <Action ID="EvaluateRepositionGoals"/>
+        <Action ID="EvaluateResupplyGoals"/>
+        <Action ID="EvaluateRetreatGoals"/>
+        <Condition ID="EvaluateRuleAction">
+            <output_port name="rule_action_type" type="std::string"/>
+        </Condition>
+        <Action ID="EvaluateSearchGoals"/>
+        <Action ID="EvaluateTacticalState">
+            <output_port name="tactical_state" type="std::string"/>
+        </Action>
+        <Action ID="ExchangeAmmoAtPoint"/>
+        <Action ID="HandlePostureSwitchRequest"/>
+        <Condition ID="HeatGuard"/>
+        <Condition ID="IsDead"/>
+        <Action ID="NavigateToGoal">
+            <input_port name="goal" type="std::string"/>
+        </Action>
+        <Condition ID="NeedEmergencySafety"/>
+        <Condition ID="NoRuleAction"/>
+        <Condition ID="PostureCooldownGuard"/>
+        <Condition ID="PowerGuard"/>
+        <Action ID="PublishGoalToNavigator"/>
+        <Action ID="RemoteExchangeAmmo"/>
+        <Action ID="RemoteExchangeHP"/>
+        <Action ID="ResetGoalCandidates"/>
+        <Condition ID="RuleCmdGuard"/>
+        <Action ID="SetCombatPosturePreference"/>
+        <Action ID="SetCombatSpinPreference"/>
+        <Action ID="SetCombatSupercapPreference"/>
+        <Action ID="SetPreferredFirePolicy">
+            <input_port name="fire_policy" type="std::string"/>
+        </Action>
+        <Action ID="SetPreferredPosture">
+            <input_port name="posture" type="std::string"/>
+        </Action>
+        <Action ID="SetPreferredSpinMode">
+            <input_port name="spin_mode" type="std::string"/>
+        </Action>
+        <Action ID="SetPreferredSupercapMode">
+            <input_port name="supercap_mode" type="std::string"/>
+        </Action>
+        <Action ID="SetSafePolicies"/>
+        <Condition ID="ShouldBuyImmediateRevive"/>
+        <Condition ID="SupercapGuard"/>
+        <Action ID="UpdateBlackboard"/>
+        <Action ID="UpdateCombatFirePolicy"/>
+        <Action ID="WaitRevive"/>
+    </TreeNodesModel>
+</root>

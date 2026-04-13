@@ -1,0 +1,20 @@
+# =============================================================================
+# rm_hw_bridge 默认参数
+# =============================================================================
+
+rm_hw_bridge:
+  ros__parameters:
+    # ---- 串口配置 ----
+    serial_device: "/dev/ttyUSB0"    # 串口设备路径
+    baudrate: 460800                  # 波特率（与 STM32 一致）
+
+    # ---- 坐标系 ----
+    frame_id: "imu_link"              # IMU / JointState 的 frame_id
+
+    # ---- CRC 校验 ----
+    # 下位机未实现 CRC 时设为 false（调试阶段）
+    # 比赛前必须设为 true，否则将放行脏包！
+    require_crc_check: false
+
+    # ---- 超时 ----
+    publish_timeout_sec: 0.5          # 上行发布超时（未使用，预留）

@@ -1,0 +1,47 @@
+# =============================================================================
+# rm_vision 参数配置 — 非代码人员可读版
+# =============================================================================
+# ★ 快速指南:
+#   改模型路径 → model_path
+#   切红蓝色 → target_color (red / blue / all)
+#   调相机曝光 → 去 rm_hik_driver 的 params.yaml 改 exposure_time
+#   开调试图 → publish_debug_image: true
+# =============================================================================
+rm_vision_detector:
+  ros__parameters:
+
+    # ===== 模型配置（换模型改这里） =====
+    # model_path: OpenVINO IR (.xml)，launch 会自动覆盖
+    model_path: "model/yolov8.xml"
+    input_width: 640                      # 模型输入分辨率（勿改）
+    input_height: 640                     # 模型输入分辨率（勿改）
+    num_classes: 38                       # YOLO11 装甲板 38 类（勿改）
+
+    # ===== 推理阈值（越高越严格，越低越灵敏） =====
+    score_threshold: 0.12                 # YOLO 首轮置信度（调低排查 raw=0）
+    nms_threshold: 0.45                 # NMS 重叠框合并
+    confidence_threshold: 0.12            # 最终输出门槛（调低排查 raw=0）
+
+    # ===== 敌我颜色（比赛前必查！） =====
+    # target_color: 白名单 — 只打什么颜色的敌人
+    #   "red"  = 只打红色装甲板
+    #   "blue" = 只打蓝色装甲板
+    #   "all"  = 红蓝都打（测试用）
+    target_color: "red"
+
+    # color_ignore: 黑名单 — 不打什么颜色（我方颜色）
+    #   0 = 忽略红色（我方红）
+    #   1 = 忽略蓝色（我方蓝）
+    #  -1 = 不过滤
+    color_ignore: 0
+
+    # ===== ROI 裁切（-1 = 不裁切） =====
+    use_roi: false
+    roi_x: 0
+    roi_y: 0
+    roi_w: -1
+    roi_h: -1
+
+    # ===== 其他 =====
+    frame_id: "camera_optical_link"
+    publish_debug_image: true            # true = 发布 /detector/image_debug
