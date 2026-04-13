@@ -3,9 +3,7 @@ build/
 install/
 log/
 
-# Third-party source symlinks (linked from parent directory)
-point_lio
-livox_ros_driver2
+# Third-party source (previously symlinks, now local copies)
 
 # IDE
 .vscode/
