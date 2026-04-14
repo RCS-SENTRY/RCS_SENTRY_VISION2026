@@ -9,9 +9,11 @@ find_package(ament_cmake REQUIRED)
 find_package(Eigen3 REQUIRED)
 find_package(PCL REQUIRED COMPONENTS common io)
 find_package(pcl_conversions REQUIRED)
+find_package(nav_msgs REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(sensor_msgs REQUIRED)
 find_package(geometry_msgs REQUIRED)
+find_package(std_srvs REQUIRED)
 find_package(tf2_ros REQUIRED)
 find_package(rm_interfaces REQUIRED)
 find_package(small_gicp REQUIRED)
@@ -35,10 +37,12 @@ target_link_libraries(global_localization_node
 
 ament_target_dependencies(global_localization_node
   geometry_msgs
+  nav_msgs
   pcl_conversions
   rclcpp
   rm_interfaces
   sensor_msgs
+  std_srvs
   tf2_ros
 )
 

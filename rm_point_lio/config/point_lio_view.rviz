@@ -8,6 +8,7 @@ Panels:
         - /TF1
         - /PointCloud21
         - /PointCloud22
+        - /PointCloud23
         - /Odometry1
         - /Path1
       Splitter Ratio: 0.5
@@ -51,6 +52,41 @@ Visualization Manager:
       Tree:
         {}
       Update Interval: 0
+      Value: true
+    - Alpha: 0.44999998807907104
+      Autocompute Intensity Bounds: false
+      Autocompute Value Bounds:
+        Max Value: 1
+        Min Value: 0
+        Value: true
+      Axis: Z
+      Channel Name: intensity
+      Class: rviz_default_plugins/PointCloud2
+      Color: 255; 255; 255
+      Color Transformer: FlatColor
+      Decay Time: 0
+      Enabled: true
+      Invert Rainbow: false
+      Max Color: 255; 255; 255
+      Max Intensity: 150
+      Min Color: 0; 0; 0
+      Min Intensity: 0
+      Name: GlobalMap
+      Position Transformer: XYZ
+      Queue Size: 10
+      Selectable: true
+      Size (Pixels): 3
+      Size (m): 0.029999999329447746
+      Style: Flat Squares
+      Topic:
+        Depth: 1
+        Durability Policy: Transient Local
+        Filter size: 10
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+        Value: /global_map
+      Use Fixed Frame: true
+      Use rainbow: false
       Value: true
     - Alpha: 0.8500000238418579
       Autocompute Intensity Bounds: false

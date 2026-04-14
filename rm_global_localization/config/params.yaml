@@ -2,6 +2,7 @@ rm_global_localization:
   ros__parameters:
     cloud_topic: /cloud_registered
     initialpose_topic: /initialpose
+    odom_topic: /aft_mapped_to_init
     map_frame: map
     odom_frame: odom
     base_frame: base_link
@@ -22,3 +23,6 @@ rm_global_localization:
     fitness_threshold: 0.2
     relocalization_timeout_sec: 1.0
     tf_lookup_timeout_sec: 0.05
+    spin_threshold_rad_s: 5.0
+    enable_reset_odom_on_recovery: true
+    reset_odom_service: /reset_odom

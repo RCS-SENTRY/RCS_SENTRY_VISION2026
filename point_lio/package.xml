@@ -22,6 +22,7 @@
   <depend>rclcpp</depend> <!-- roscpp in ROS1 is replaced by rclcpp in ROS2 -->
   <depend>rclpy</depend>  <!-- rospy is replaced by rclpy in ROS2 -->
   <depend>sensor_msgs</depend>
+  <depend>std_srvs</depend>
   <depend>geometry_msgs</depend>
   <depend>nav_msgs</depend>
   <depend>tf2_ros</depend> <!-- tf in ROS1 is replaced by tf2 in ROS2 -->

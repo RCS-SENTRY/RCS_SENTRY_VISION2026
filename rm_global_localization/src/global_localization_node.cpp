@@ -149,12 +149,18 @@ const std::shared_ptr<small_gicp::KdTree<small_gicp::PointCloud>> & MapManager::
   return target_tree_;
 }
 
+const pcl::PointCloud<pcl::PointXYZ> & MapManager::visual_cloud() const
+{
+  return visual_cloud_;
+}
+
 void MapManager::load_map(const std::string & map_path)
 {
   pcl::PointCloud<pcl::PointXYZ> raw_map;
   if (pcl::io::loadPCDFile(map_path, raw_map) != 0) {
     throw std::runtime_error("Failed to load map PCD: " + map_path);
   }
+  visual_cloud_ = raw_map;
 
   auto raw_points = cloud_to_eigen_points(raw_map);
   if (raw_points.empty()) {
@@ -256,6 +262,7 @@ LocalizationNode::LocalizationNode()
   map_frame_ = this->declare_parameter<std::string>("map_frame", "map");
   odom_frame_ = this->declare_parameter<std::string>("odom_frame", "odom");
   base_frame_ = this->declare_parameter<std::string>("base_frame", "base_link");
+  odom_topic_ = this->declare_parameter<std::string>("odom_topic", "/aft_mapped_to_init");
   const auto cloud_topic = this->declare_parameter<std::string>(
     "cloud_topic", "/cloud_registered");
   const auto initialpose_topic = this->declare_parameter<std::string>(
@@ -274,9 +281,22 @@ LocalizationNode::LocalizationNode()
   relocalization_timeout_sec_ =
     this->declare_parameter<double>("relocalization_timeout_sec", 1.0);
   tf_lookup_timeout_sec_ = this->declare_parameter<double>("tf_lookup_timeout_sec", 0.05);
+  spin_threshold_rad_s_ = this->declare_parameter<double>("spin_threshold_rad_s", 5.0);
+  enable_reset_odom_on_recovery_ =
+    this->declare_parameter<bool>("enable_reset_odom_on_recovery", true);
+  reset_odom_service_ =
+    this->declare_parameter<std::string>("reset_odom_service", "/reset_odom");
 
+  global_map_pub_ = this->create_publisher<sensor_msgs::msg::PointCloud2>(
+    "/global_map",
+    rclcpp::QoS(rclcpp::KeepLast(1)).transient_local().reliable());
+  reset_odom_client_ = this->create_client<std_srvs::srv::Empty>(reset_odom_service_);
   map_manager_ = std::make_unique<MapManager>(
     this->get_logger(), map_path, map_voxel_size, num_neighbors, num_threads);
+  publish_global_map();
+  global_map_timer_ = this->create_wall_timer(
+    std::chrono::seconds(1),
+    [this]() { publish_global_map(); });
   registration_engine_ = std::make_unique<RegistrationEngine>(
     scan_voxel_size,
     num_neighbors,
@@ -287,6 +307,10 @@ LocalizationNode::LocalizationNode()
     rotation_eps,
     min_scan_points);
 
+  odom_sub_ = this->create_subscription<nav_msgs::msg::Odometry>(
+    odom_topic_,
+    rclcpp::QoS(20),
+    std::bind(&LocalizationNode::on_odometry, this, std::placeholders::_1));
   cloud_sub_ = this->create_subscription<sensor_msgs::msg::PointCloud2>(
     cloud_topic,
     rclcpp::SensorDataQoS(),
@@ -305,11 +329,36 @@ LocalizationNode::LocalizationNode()
 
   RCLCPP_INFO(
     this->get_logger(),
-    "rm_global_localization ready. waiting for /initialpose, cloud_topic=%s map=%s fitness_threshold=%.3f timeout=%.2fs",
+    "rm_global_localization ready. waiting for /initialpose, cloud_topic=%s odom_topic=%s map=%s fitness_threshold=%.3f spin_threshold=%.2f reset_odom=%s timeout=%.2fs",
     cloud_topic.c_str(),
+    odom_topic_.c_str(),
     map_path.c_str(),
     fitness_threshold_,
+    spin_threshold_rad_s_,
+    enable_reset_odom_on_recovery_ ? reset_odom_service_.c_str() : "disabled",
     relocalization_timeout_sec_);
+}
+
+void LocalizationNode::publish_global_map()
+{
+  if (!map_manager_ || !global_map_pub_) {
+    return;
+  }
+
+  sensor_msgs::msg::PointCloud2 msg;
+  pcl::toROSMsg(map_manager_->visual_cloud(), msg);
+  msg.header.frame_id = map_frame_;
+  msg.header.stamp = this->now();
+  global_map_pub_->publish(msg);
+
+  if (!has_logged_global_map_publish_) {
+    has_logged_global_map_publish_ = true;
+    RCLCPP_INFO(
+      this->get_logger(),
+      "Published /global_map with %zu raw visualization points in frame '%s'",
+      map_manager_->visual_cloud().size(),
+      map_frame_.c_str());
+  }
 }
 
 void LocalizationNode::on_initial_pose(
@@ -331,6 +380,7 @@ void LocalizationNode::on_initial_pose(
     T_map_odom_ = T_map_base * T_odom_base.inverse();
     has_map_odom_ = true;
     is_converged_ = false;
+    state_ = State::RECOVERING;
 
     const auto stamp =
       (msg->header.stamp.sec == 0 && msg->header.stamp.nanosec == 0) ?
@@ -353,6 +403,113 @@ void LocalizationNode::on_initial_pose(
   }
 }
 
+void LocalizationNode::on_odometry(const nav_msgs::msg::Odometry::SharedPtr msg)
+{
+  const auto stamp =
+    (msg->header.stamp.sec == 0 && msg->header.stamp.nanosec == 0) ?
+    this->now() : rclcpp::Time(msg->header.stamp);
+  const double yaw_rate = std::abs(msg->twist.twist.angular.z);
+  const bool spinning_now = yaw_rate > spin_threshold_rad_s_;
+
+  if (spinning_now) {
+    if (!is_spinning_) {
+      RCLCPP_WARN(
+        this->get_logger(),
+        "Spin detected: |angular.z|=%.3f rad/s > %.3f. Entering LOST state.",
+        yaw_rate,
+        spin_threshold_rad_s_);
+    }
+    is_spinning_ = true;
+    enter_lost(stamp, "spin detected from odom");
+    return;
+  }
+
+  if (is_spinning_) {
+    is_spinning_ = false;
+    if (has_last_known_good_pose_) {
+      state_ = State::RECOVERING;
+      RCLCPP_INFO(
+        this->get_logger(),
+        "Spin cleared. Entering RECOVERING with last known good pose at (%.2f, %.2f, %.2f).",
+        last_known_good_pose_.pose.position.x,
+        last_known_good_pose_.pose.position.y,
+        last_known_good_pose_.pose.position.z);
+    } else {
+      RCLCPP_WARN(
+        this->get_logger(),
+        "Spin cleared, but no last known good pose is available yet. Staying LOST.");
+    }
+  }
+}
+
+void LocalizationNode::enter_lost(const rclcpp::Time & stamp, const std::string & reason)
+{
+  if (state_ != State::LOST) {
+    RCLCPP_WARN(
+      this->get_logger(),
+      "Localization entered LOST state: %s", reason.c_str());
+  }
+  state_ = State::LOST;
+  lost_time_ = stamp;
+  is_converged_ = false;
+}
+
+void LocalizationNode::request_reset_odom(const builtin_interfaces::msg::Time & stamp)
+{
+  if (!enable_reset_odom_on_recovery_ || !reset_odom_client_) {
+    return;
+  }
+  if (reset_odom_request_in_flight_) {
+    return;
+  }
+
+  if (!reset_odom_client_->wait_for_service(std::chrono::milliseconds(100))) {
+    RCLCPP_WARN(
+      this->get_logger(),
+      "RECOVERING succeeded, but reset service '%s' is unavailable. "
+      "Keeping absorbed map->odom without resetting Point-LIO odom.",
+      reset_odom_service_.c_str());
+    return;
+  }
+
+  pending_reset_pose_ = last_known_good_pose_;
+  pending_reset_stamp_ = stamp;
+  auto request = std::make_shared<std_srvs::srv::Empty::Request>();
+  reset_odom_request_in_flight_ = true;
+
+  reset_odom_client_->async_send_request(
+    request,
+    std::bind(
+      &LocalizationNode::handle_reset_odom_response,
+      this,
+      std::placeholders::_1));
+}
+
+void LocalizationNode::handle_reset_odom_response(
+  rclcpp::Client<std_srvs::srv::Empty>::SharedFuture future)
+{
+  reset_odom_request_in_flight_ = false;
+
+  try {
+    future.get();
+  } catch (const std::exception & ex) {
+    RCLCPP_WARN(
+      this->get_logger(),
+      "reset_odom service call failed: %s", ex.what());
+    return;
+  }
+
+  T_map_base_current_ = pose_to_isometry(pending_reset_pose_.pose);
+  T_map_odom_ = T_map_base_current_;
+  has_map_odom_ = true;
+  publish_map_to_odom(pending_reset_stamp_);
+
+  RCLCPP_INFO(
+    this->get_logger(),
+    "reset_odom succeeded. map->odom now carries the recovered absolute pose, "
+    "and Point-LIO odom is expected to restart from identity.");
+}
+
 void LocalizationNode::on_registered_cloud(const sensor_msgs::msg::PointCloud2::SharedPtr msg)
 {
   if (!has_map_odom_) {
@@ -368,21 +525,44 @@ void LocalizationNode::on_registered_cloud(const sensor_msgs::msg::PointCloud2::
     const auto stamp = rclcpp::Time(msg->header.stamp);
     const auto T_odom_base = lookup_odom_to_base(stamp);
 
+    if (is_spinning_) {
+      publish_localized_pose(T_map_base_current_, msg->header.stamp);
+      publish_localization_status(
+        static_cast<float>(last_fitness_score_),
+        false,
+        msg->header.stamp);
+      RCLCPP_WARN_THROTTLE(
+        this->get_logger(),
+        *this->get_clock(),
+        1000,
+        "Skipping GICP update while spinning. Holding previous map->odom.");
+      return;
+    }
+
+    if (state_ == State::LOST && has_last_known_good_pose_) {
+      state_ = State::RECOVERING;
+      RCLCPP_INFO(
+        this->get_logger(),
+        "Entering RECOVERING after %.2f s in LOST. Using last known good pose as GICP initial guess.",
+        (stamp - lost_time_).seconds());
+    }
+
     pcl::PointCloud<pcl::PointXYZ> cloud_odom;
     pcl::fromROSMsg(*msg, cloud_odom);
     const auto source_points_base =
       cloud_to_eigen_points(cloud_odom, T_odom_base.inverse());
 
-    const Eigen::Isometry3d initial_guess = T_map_odom_ * T_odom_base;
+    const Eigen::Isometry3d initial_guess =
+      (state_ == State::RECOVERING && has_last_known_good_pose_) ?
+      pose_to_isometry(last_known_good_pose_.pose) :
+      (T_map_odom_ * T_odom_base);
     const auto alignment = registration_engine_->align(
       source_points_base, initial_guess, *map_manager_);
+    last_fitness_score_ = alignment.fitness_score;
     publish_localized_pose(alignment.T_map_base, msg->header.stamp);
 
     if (!alignment.converged) {
-      const bool timed_out =
-        last_accepted_alignment_time_.nanoseconds() == 0 ||
-        (stamp - last_accepted_alignment_time_).seconds() > relocalization_timeout_sec_;
-      is_converged_ = !timed_out;
+      enter_lost(stamp, "small_gicp did not converge");
       publish_localization_status(
         static_cast<float>(alignment.fitness_score), is_converged_, msg->header.stamp);
       RCLCPP_WARN(
@@ -396,17 +576,26 @@ void LocalizationNode::on_registered_cloud(const sensor_msgs::msg::PointCloud2::
     }
 
     if (alignment.fitness_score < fitness_threshold_) {
+      const bool was_recovering = state_ == State::RECOVERING;
       T_map_base_current_ = alignment.T_map_base;
       T_map_odom_ = alignment.T_map_base * T_odom_base.inverse();
       has_map_odom_ = true;
       is_converged_ = true;
       last_accepted_alignment_time_ = stamp;
+      last_known_good_pose_ = isometry_to_pose_stamped(
+        alignment.T_map_base, map_frame_, msg->header.stamp);
+      has_last_known_good_pose_ = true;
+      state_ = State::NORMAL;
       publish_map_to_odom(msg->header.stamp);
+      if (was_recovering) {
+        RCLCPP_INFO(
+          this->get_logger(),
+          "RECOVERING succeeded. Absorbed odom drift into map->odom after %.2f s lost time.",
+          (stamp - lost_time_).seconds());
+        request_reset_odom(msg->header.stamp);
+      }
     } else {
-      const bool timed_out =
-        last_accepted_alignment_time_.nanoseconds() == 0 ||
-        (stamp - last_accepted_alignment_time_).seconds() > relocalization_timeout_sec_;
-      is_converged_ = !timed_out;
+      enter_lost(stamp, "fitness above threshold");
       RCLCPP_WARN(
         this->get_logger(),
         "Rejected map->odom update due to low registration quality: "
@@ -422,12 +611,14 @@ void LocalizationNode::on_registered_cloud(const sensor_msgs::msg::PointCloud2::
 
     RCLCPP_INFO(
       this->get_logger(),
-      "Global localization: %.2f ms, fitness=%.6f, raw_error=%.6f, inliers=%zu, iterations=%zu",
+      "Global localization: %.2f ms, fitness=%.6f, raw_error=%.6f, inliers=%zu, iterations=%zu, state=%s",
       alignment.elapsed_ms,
       alignment.fitness_score,
       alignment.raw_error,
       alignment.num_inliers,
-      alignment.iterations);
+      alignment.iterations,
+      state_ == State::NORMAL ? "NORMAL" :
+      (state_ == State::LOST ? "LOST" : "RECOVERING"));
   } catch (const tf2::TransformException & ex) {
     RCLCPP_WARN_THROTTLE(
       this->get_logger(),

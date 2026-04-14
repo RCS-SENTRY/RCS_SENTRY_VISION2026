@@ -11,11 +11,13 @@
 
   <depend>eigen</depend>
   <depend>geometry_msgs</depend>
+  <depend>nav_msgs</depend>
   <depend>pcl_conversions</depend>
   <depend>rclcpp</depend>
   <depend>rm_interfaces</depend>
   <depend>sensor_msgs</depend>
   <depend>small_gicp</depend>
+  <depend>std_srvs</depend>
   <depend>tf2_ros</depend>
 
   <exec_depend>launch</exec_depend>

@@ -75,8 +75,11 @@ void ImuProcess::Reset() {
     RCLCPP_WARN(logger, "Reset ImuProcess");
     mean_acc = V3D(0, 0, -1.0);
     mean_gyr = V3D(0, 0, 0);
+    gravity_ = V3D(0, 0, -G_m_s2);
     imu_need_init_ = true;
     init_iter_num = 1;
+    b_first_frame_ = true;
+    gravity_align_ = false;
 }
 
 void ImuProcess::IMU_init(const MeasureGroup &meas, int &N) {

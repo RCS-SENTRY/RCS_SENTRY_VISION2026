@@ -19,6 +19,7 @@
 #include <pcl/filters/voxel_grid.h>
 #include <pcl/io/pcd_io.h>
 #include <sensor_msgs/msg/point_cloud2.hpp>
+#include <std_srvs/srv/empty.hpp>
 #include <tf2_ros/transform_broadcaster.h>
 #include <geometry_msgs/msg/vector3.hpp>
 #include <livox_ros_driver2/msg/custom_msg.hpp>
@@ -75,6 +76,10 @@ sensor_msgs::msg::Imu::ConstSharedPtr imu_last_ptr;
 nav_msgs::msg::Path path;
 nav_msgs::msg::Odometry odomAftMapped;
 geometry_msgs::msg::PoseStamped msg_body_pose;
+PointCloudXYZI::Ptr pcl_wait_save(new PointCloudXYZI());
+
+Eigen::Matrix<double, 24, 24> P_init_input_reset = Eigen::Matrix<double, 24, 24>::Identity() * 0.01;
+Eigen::Matrix<double, 30, 30> P_init_output_reset = Eigen::Matrix<double, 30, 30>::Identity() * 0.01;
 
 auto logger = rclcpp::get_logger("laserMapping");
 
@@ -135,6 +140,129 @@ void pointBodyLidarToIMU(PointType const *const pi, PointType *const po) {
 }
 
 int points_cache_size = 0;
+BoxPointType LocalMap_Points;
+bool Localmap_Initialized = false;
+
+void reset_filter_states() {
+    state_in = state_input();
+    state_out = state_output();
+    input_in = input_ikfom();
+
+    if (extrinsic_est_en) {
+        if (!use_imu_as_input) {
+            kf_output.x_.offset_R_L_I = Lidar_R_wrt_IMU;
+            kf_output.x_.offset_T_L_I = Lidar_T_wrt_IMU;
+        } else {
+            kf_input.x_.offset_R_L_I = Lidar_R_wrt_IMU;
+            kf_input.x_.offset_T_L_I = Lidar_T_wrt_IMU;
+        }
+    }
+
+    kf_input.change_x(state_in);
+    kf_output.change_x(state_out);
+    kf_input.change_P(P_init_input_reset);
+    kf_output.change_P(P_init_output_reset);
+}
+
+void reset_local_odometry_state() {
+    lock_guard<mutex> lock(mtx_buffer);
+
+    p_imu->Reset();
+    reset_filter_states();
+
+    ikdtree.Build(PointVector());
+    PointVector().swap(ikdtree.PCL_Storage);
+
+    init_map = false;
+    flg_first_scan = true;
+    is_first_frame = true;
+    lidar_pushed = false;
+    Localmap_Initialized = false;
+    memset(&LocalMap_Points, 0, sizeof(LocalMap_Points));
+
+    scan_count = 0;
+    publish_count = 0;
+    frame_ct = 0;
+    feats_down_size = 0;
+    points_cache_size = 0;
+
+    time_update_last = 0.0;
+    time_current = 0.0;
+    time_predict_last_const = 0.0;
+    t_last = 0.0;
+    lidar_end_time = 0.0;
+    first_lidar_time = 0.0;
+    time_con = 0.0;
+    last_timestamp_lidar = -1.0;
+    last_timestamp_imu = -1.0;
+
+    lidar_buffer.clear();
+    time_buffer.clear();
+    imu_deque.clear();
+    Measures = MeasureGroup();
+
+    ptr_con->clear();
+    feats_undistort->clear();
+    feats_down_body_space->clear();
+    init_feats_world->clear();
+    feats_down_body->clear();
+    feats_down_world->clear();
+    normvec->clear();
+    pcl_wait_save->clear();
+
+    cub_needrm.clear();
+    Nearest_Points.clear();
+    pbody_list.clear();
+    crossmat_list.clear();
+    time_seq.clear();
+    pointSearchSqDis.assign(NUM_MATCH_POINTS, 0.0f);
+    memset(point_selected_surf, true, sizeof(point_selected_surf));
+
+    imu_last = sensor_msgs::msg::Imu();
+    imu_next = sensor_msgs::msg::Imu();
+    imu_last_ptr.reset();
+
+    odomAftMapped = nav_msgs::msg::Odometry();
+    odomAftMapped.header.frame_id = odom_header_frame_id;
+    odomAftMapped.child_frame_id = odom_child_frame_id;
+    odomAftMapped.pose.pose.orientation.w = 1.0;
+
+    msg_body_pose = geometry_msgs::msg::PoseStamped();
+    path = nav_msgs::msg::Path();
+    path.header.frame_id = odom_header_frame_id;
+    path.header.stamp = get_ros_time(0.0);
+}
+
+void publish_identity_odometry(
+    const rclcpp::Publisher<nav_msgs::msg::Odometry>::SharedPtr &pubOdomAftMapped,
+    const std::shared_ptr<tf2_ros::TransformBroadcaster> &tf_br,
+    const rclcpp::Time & stamp) {
+    nav_msgs::msg::Odometry odom_msg;
+    odom_msg.header.stamp = stamp;
+    odom_msg.header.frame_id = odom_header_frame_id;
+    odom_msg.child_frame_id = odom_child_frame_id;
+    odom_msg.pose.pose.orientation.w = 1.0;
+    pubOdomAftMapped->publish(odom_msg);
+
+    geometry_msgs::msg::TransformStamped transform;
+    transform.header.stamp = stamp;
+    transform.header.frame_id = odom_header_frame_id;
+    transform.child_frame_id = odom_child_frame_id;
+    transform.transform.rotation.w = 1.0;
+    tf_br->sendTransform(transform);
+}
+
+void publish_reset_path(
+    const rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr &pubPath,
+    const rclcpp::Time & stamp) {
+    if (odom_only || !pubPath || !path_en) {
+        return;
+    }
+    path.header.stamp = stamp;
+    path.header.frame_id = odom_header_frame_id;
+    path.poses.clear();
+    pubPath->publish(path);
+}
 
 void points_cache_collect() // seems for debug
 {
@@ -142,9 +270,6 @@ void points_cache_collect() // seems for debug
     ikdtree.acquire_removed_points(points_history);
     points_cache_size = points_history.size();
 }
-
-BoxPointType LocalMap_Points;
-bool Localmap_Initialized = false;
 
 void lasermap_fov_segment() {
     cub_needrm.shrink_to_fit();
@@ -515,8 +640,6 @@ void publish_init_kdtree(const rclcpp::Publisher<sensor_msgs::msg::PointCloud2>:
 }
 
 PointCloudXYZI::Ptr pcl_wait_pub(new PointCloudXYZI(500000, 1));
-PointCloudXYZI::Ptr pcl_wait_save(new PointCloudXYZI());
-
 void publish_frame_world(const rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr &pubLaserCloudFullRes) {
 
     if (odom_only) {return;}
@@ -746,17 +869,16 @@ int main(int argc, char **argv) {
 
     kf_input.init_dyn_share_modified(get_f_input, df_dx_input, h_model_input);
     kf_output.init_dyn_share_modified_2h(get_f_output, df_dx_output, h_model_output, h_model_IMU_output);
-    Eigen::Matrix<double, 24, 24> P_init = MD(24, 24)::Identity() * 0.01;
-    P_init.block<3, 3>(21, 21) = MD(3, 3)::Identity() * 0.0001;
-    P_init.block<6, 6>(15, 15) = MD(6, 6)::Identity() * 0.001;
-    P_init.block<6, 6>(6, 6) = MD(6, 6)::Identity() * 0.0001;
-    kf_input.change_P(P_init);
-    Eigen::Matrix<double, 30, 30> P_init_output = MD(30, 30)::Identity() * 0.01;
-    P_init_output.block<3, 3>(21, 21) = MD(3, 3)::Identity() * 0.0001;
-    P_init_output.block<6, 6>(6, 6) = MD(6, 6)::Identity() * 0.0001;
-    P_init_output.block<6, 6>(24, 24) = MD(6, 6)::Identity() * 0.001;
-    kf_input.change_P(P_init);
-    kf_output.change_P(P_init_output);
+    P_init_input_reset = MD(24, 24)::Identity() * 0.01;
+    P_init_input_reset.block<3, 3>(21, 21) = MD(3, 3)::Identity() * 0.0001;
+    P_init_input_reset.block<6, 6>(15, 15) = MD(6, 6)::Identity() * 0.001;
+    P_init_input_reset.block<6, 6>(6, 6) = MD(6, 6)::Identity() * 0.0001;
+    P_init_output_reset = MD(30, 30)::Identity() * 0.01;
+    P_init_output_reset.block<3, 3>(21, 21) = MD(3, 3)::Identity() * 0.0001;
+    P_init_output_reset.block<6, 6>(6, 6) = MD(6, 6)::Identity() * 0.0001;
+    P_init_output_reset.block<6, 6>(24, 24) = MD(6, 6)::Identity() * 0.001;
+    kf_input.change_P(P_init_input_reset);
+    kf_output.change_P(P_init_output_reset);
     Eigen::Matrix<double, 24, 24> Q_input = process_noise_cov_input();
     Eigen::Matrix<double, 30, 30> Q_output = process_noise_cov_output();
     /*** debug record ***/
@@ -814,6 +936,19 @@ int main(int argc, char **argv) {
     //auto plane_pub = nh->create_publisher<visualization_msgs::msg::Marker>
     //        ("/planner_normal", 1000);
     auto tf_broadcaster = std::make_shared<tf2_ros::TransformBroadcaster>(nh);
+    auto reset_odom_srv = nh->create_service<std_srvs::srv::Empty>(
+            "/reset_odom",
+            [nh, pubOdomAftMapped, pubPath, tf_broadcaster](
+                const std::shared_ptr<std_srvs::srv::Empty::Request> /*request*/,
+                std::shared_ptr<std_srvs::srv::Empty::Response> /*response*/) {
+                reset_local_odometry_state();
+                const auto stamp = nh->get_clock()->now();
+                publish_identity_odometry(pubOdomAftMapped, tf_broadcaster, stamp);
+                publish_reset_path(pubPath, stamp);
+                RCLCPP_WARN(
+                        logger,
+                        "Processed /reset_odom request. Point-LIO local odom has been reset to identity.");
+            });
 //------------------------------------------------------------------------------------------------------
     signal(SIGINT, SigHandle);
     rclcpp::Rate rate(5000);
@@ -833,7 +968,10 @@ int main(int argc, char **argv) {
 
             if (flg_reset) {
                 RCLCPP_WARN(logger, "reset when rosbag play back");
-                p_imu->Reset();
+                reset_local_odometry_state();
+                const auto stamp = nh->get_clock()->now();
+                publish_identity_odometry(pubOdomAftMapped, tf_broadcaster, stamp);
+                publish_reset_path(pubPath, stamp);
                 flg_reset = false;
                 continue;
             }
