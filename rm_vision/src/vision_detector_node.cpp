@@ -31,6 +31,7 @@
 // 自定义消息
 #include "rm_interfaces/msg/armor_detection.hpp"
 #include "rm_interfaces/msg/armor_detections.hpp"
+#include "rm_interfaces/msg/gimbal_status.hpp"
 
 // 内部模块
 #include "rm_vision/armor_types.hpp"
@@ -49,8 +50,10 @@ public:
     this->declare_parameter<std::string>("model_path", "");
     // ★ confidence_threshold: 统一置信度阈值（替代 min_confidence）
     this->declare_parameter<double>("confidence_threshold", 0.5);
-    // ★ color_ignore: 需要忽略的颜色 (0=无, 1=Red, 2=Blue)
+    // ★ color_ignore: fallback 黑名单 (0=忽略红, 1=忽略蓝, -1=不过滤)
     this->declare_parameter<int>("color_ignore", 0);
+    this->declare_parameter<bool>("prefer_referee_robot_id", true);
+    this->declare_parameter<std::string>("gimbal_status_topic", "/gimbal_status");
     // 保留参数
     this->declare_parameter<int>("input_width", 640);
     this->declare_parameter<int>("input_height", 640);
@@ -87,8 +90,14 @@ public:
     frame_id_            = this->get_parameter("frame_id").as_string();
     show_debug_          = this->get_parameter("show_debug").as_bool();
     publish_debug_image_ = this->get_parameter("publish_debug_image").as_bool();
-    target_color_        = this->get_parameter("target_color").as_string();
-    color_ignore_        = this->get_parameter("color_ignore").as_int();
+    fallback_target_color_ = this->get_parameter("target_color").as_string();
+    fallback_color_ignore_ = this->get_parameter("color_ignore").as_int();
+    prefer_referee_robot_id_ =
+      this->get_parameter("prefer_referee_robot_id").as_bool();
+    target_color_        = fallback_target_color_;
+    color_ignore_        = fallback_color_ignore_;
+    const std::string gimbal_status_topic =
+      this->get_parameter("gimbal_status_topic").as_string();
 
     // ★★★ 容错拦截：model_path 为空 → 抛异常，安全终止 ★★★
     if (yolo_cfg.model_path.empty()) {
@@ -128,6 +137,15 @@ public:
     armor_pub_ = this->create_publisher<rm_interfaces::msg::ArmorDetections>(
       "/detector/armors", rclcpp::SensorDataQoS());
 
+    if (prefer_referee_robot_id_) {
+      status_sub_ = this->create_subscription<rm_interfaces::msg::GimbalStatus>(
+        gimbal_status_topic,
+        rclcpp::SensorDataQoS(),
+        [this](const rm_interfaces::msg::GimbalStatus::ConstSharedPtr msg) {
+          on_gimbal_status(msg);
+        });
+    }
+
     // ---- [FIX-VIZ] 发布：调试可视化图像（ROS-Native，不使用 imshow） ----
     if (publish_debug_image_) {
       debug_pub_ = this->create_publisher<sensor_msgs::msg::Image>(
@@ -142,7 +160,12 @@ public:
     RCLCPP_INFO(get_logger(), "rm_vision_detector node initialized (async pipeline v2).");
     RCLCPP_INFO(get_logger(), "  Subscribing: /camera/image_raw (SensorDataQoS)");
     RCLCPP_INFO(get_logger(), "  Publishing:  /detector/armors");
-    RCLCPP_INFO(get_logger(), "  Target color filter: %s", target_color_.c_str());
+    RCLCPP_INFO(
+      get_logger(),
+      "  Target color filter fallback: %s (color_ignore=%d, referee_priority=%s)",
+      fallback_target_color_.c_str(),
+      fallback_color_ignore_,
+      prefer_referee_robot_id_ ? "true" : "false");
   }
 
   ~VisionDetectorNode() override
@@ -156,6 +179,66 @@ public:
   }
 
 private:
+  enum class TeamColor
+  {
+    UNKNOWN = 0,
+    RED,
+    BLUE
+  };
+
+  static TeamColor team_from_robot_id(uint8_t robot_id)
+  {
+    if (robot_id >= 1 && robot_id <= 11) {
+      return TeamColor::RED;
+    }
+    if (robot_id >= 101 && robot_id <= 111) {
+      return TeamColor::BLUE;
+    }
+    return TeamColor::UNKNOWN;
+  }
+
+  void on_gimbal_status(const rm_interfaces::msg::GimbalStatus::ConstSharedPtr msg)
+  {
+    const TeamColor team = team_from_robot_id(msg->robot_id);
+
+    std::lock_guard<std::mutex> lock(filter_config_mutex_);
+    if (team == TeamColor::RED) {
+      target_color_ = "blue";
+      color_ignore_ = 0;
+      has_referee_team_info_ = true;
+    } else if (team == TeamColor::BLUE) {
+      target_color_ = "red";
+      color_ignore_ = 1;
+      has_referee_team_info_ = true;
+    } else {
+      target_color_ = fallback_target_color_;
+      color_ignore_ = fallback_color_ignore_;
+      has_referee_team_info_ = false;
+    }
+
+    if (team != last_reported_team_) {
+      if (team == TeamColor::RED) {
+        RCLCPP_INFO(
+          get_logger(),
+          "[Vision] referee robot_id=%u -> own team=RED, target_color=blue, color_ignore=0",
+          msg->robot_id);
+      } else if (team == TeamColor::BLUE) {
+        RCLCPP_INFO(
+          get_logger(),
+          "[Vision] referee robot_id=%u -> own team=BLUE, target_color=red, color_ignore=1",
+          msg->robot_id);
+      } else {
+        RCLCPP_WARN(
+          get_logger(),
+          "[Vision] referee robot_id=%u invalid/unknown, fallback to YAML target_color=%s color_ignore=%d",
+          msg->robot_id,
+          fallback_target_color_.c_str(),
+          fallback_color_ignore_);
+      }
+      last_reported_team_ = team;
+    }
+  }
+
   // =========================================================================
   //  [FIX-2] 图像回调 — 极轻量，仅做队列推入
   //  不调用 detect()，不阻塞 Executor
@@ -223,6 +306,14 @@ private:
       auto t1 = std::chrono::high_resolution_clock::now();
       double infer_ms = std::chrono::duration<double, std::milli>(t1 - t0).count();
 
+      std::string active_target_color;
+      int active_color_ignore = -1;
+      {
+        std::lock_guard<std::mutex> lock(filter_config_mutex_);
+        active_target_color = target_color_;
+        active_color_ignore = color_ignore_;
+      }
+
       // ---- 4. [FIX-FILTER] 颜色过滤：target_color 优先，color_ignore 兜底 ----
       rm_interfaces::msg::ArmorDetections out_msg;
       out_msg.header.stamp    = msg->header.stamp;   // ★ 透传输入图像时间戳
@@ -246,14 +337,14 @@ private:
         //   2. target_color="red"/"blue" → 白名单：只攻击目标颜色
         //   3. target_color 其他值 → 退回 color_ignore 黑名单模式
         bool filtered = false;
-        if (target_color_ == "all") {
+        if (active_target_color == "all") {
           filtered = false;
-        } else if (target_color_ == "red") {
+        } else if (active_target_color == "red") {
           if (armor_color != rm_vision::ArmorColor::RED)  filtered = true;
-        } else if (target_color_ == "blue") {
+        } else if (active_target_color == "blue") {
           if (armor_color != rm_vision::ArmorColor::BLUE) filtered = true;
-        } else if (color_ignore_ >= 0 && color_ignore_ <= 1) {
-          auto ignore_color = static_cast<rm_vision::ArmorColor>(color_ignore_);
+        } else if (active_color_ignore >= 0 && active_color_ignore <= 1) {
+          auto ignore_color = static_cast<rm_vision::ArmorColor>(active_color_ignore);
           if (armor_color == ignore_color) filtered = true;
         }
 
@@ -317,7 +408,8 @@ private:
 
       // ---- 5. 调试可视化（显示所有原始检测，过滤的标灰×） ----
       if (publish_debug_image_ && debug_pub_) {
-        draw_debug_ros_raw(mat, detections, filter_mask, roi_offset, msg->header);
+        draw_debug_ros_raw(
+          mat, detections, filter_mask, roi_offset, msg->header, active_target_color);
       }
 
       // ---- 6. 周期性性能日志（~1Hz @ ~100fps） ----
@@ -326,7 +418,8 @@ private:
         int raw_count = static_cast<int>(detections.size());
         RCLCPP_INFO(get_logger(),
           "[Vision] frame#=%u  infer=%.1fms  raw=%d  passed=%zu  target_color=%s",
-          frame_count_.load(), infer_ms, raw_count, out_msg.detections.size(), target_color_.c_str());
+          frame_count_.load(), infer_ms, raw_count, out_msg.detections.size(),
+          active_target_color.c_str());
       }
     }
 
@@ -342,7 +435,8 @@ private:
     const std::vector<rm_vision::Detection> & detections,
     const std::vector<bool> & filter_mask,
     const cv::Point2f & roi_offset,
-    const std_msgs::msg::Header & header)
+    const std_msgs::msg::Header & header,
+    const std::string & active_target_color)
   {
     cv::Mat vis = img.clone();
 
@@ -415,7 +509,7 @@ private:
     }
 
     // 左上角状态文字
-    std::string status = "target=" + target_color_ +
+    std::string status = "target=" + active_target_color +
       "  raw=" + std::to_string(detections.size()) +
       "  passed=" + std::to_string(
         std::count(filter_mask.begin(), filter_mask.end(), false));
@@ -442,8 +536,14 @@ private:
   bool show_debug_ = false;
   bool publish_debug_image_ = false;    // [FIX-VIZ] ROS-Native 可视化开关
   std::string target_color_ = "blue";
-  int color_ignore_ = -1;              // [FIX-FOF] -1=不过滤, 0=忽略红, 1=忽略蓝
+  std::string fallback_target_color_ = "blue";
+  int color_ignore_ = -1;               // [FIX-FOF] -1=不过滤, 0=忽略红, 1=忽略蓝
+  int fallback_color_ignore_ = -1;
+  bool prefer_referee_robot_id_ = true;
+  bool has_referee_team_info_ = false;
+  TeamColor last_reported_team_ = TeamColor::UNKNOWN;
   std::atomic<uint32_t> frame_count_{0};
+  std::mutex filter_config_mutex_;
 
   // ---- [FIX-2] 异步推理基础设施 ----
   std::thread inference_thread_;
@@ -456,6 +556,7 @@ private:
 
   // ---- ROS 2 接口 ----
   rclcpp::Subscription<sensor_msgs::msg::Image>::SharedPtr image_sub_;
+  rclcpp::Subscription<rm_interfaces::msg::GimbalStatus>::SharedPtr status_sub_;
   rclcpp::Publisher<rm_interfaces::msg::ArmorDetections>::SharedPtr armor_pub_;
   rclcpp::Publisher<sensor_msgs::msg::Image>::SharedPtr debug_pub_;  // [FIX-VIZ]
 };

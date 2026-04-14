@@ -39,6 +39,7 @@ def generate_launch_description():
     livox_dir      = get_package_share_directory('rm_livox_driver')
     point_lio_dir  = get_package_share_directory('rm_point_lio')
     global_loc_dir = get_package_share_directory('rm_global_localization')
+    bringup_dir    = get_package_share_directory('rm_bringup')
     hw_bridge_params = os.path.join(hw_bridge_dir,  'config', 'params.yaml')
     hik_params       = os.path.join(hik_driver_dir, 'config', 'params.yaml')
     vision_params    = os.path.join(vision_dir,     'config', 'params.yaml')
@@ -46,6 +47,7 @@ def generate_launch_description():
     livox_launch     = os.path.join(livox_dir,      'launch', 'mid360_bringup.launch.py')
     point_lio_launch = os.path.join(point_lio_dir,  'launch', 'point_lio.launch.py')
     global_loc_launch = os.path.join(global_loc_dir, 'launch', 'global_localization.launch.py')
+    initial_pose_params = os.path.join(bringup_dir, 'config', 'initial_pose_manager.yaml')
 
     # ------------------------------------------------------------------
     # Launch 参数声明
@@ -105,6 +107,10 @@ def generate_launch_description():
     declare_global_map_path = DeclareLaunchArgument(
         'global_map_path', default_value='/home/rm/Desktop/SENTRY_FULL/RMUC2026.pcd',
         description='Absolute path to the static PCD map used by rm_global_localization')
+
+    declare_initial_pose_publish_on_startup = DeclareLaunchArgument(
+        'initial_pose_publish_on_startup', default_value='true',
+        description='true=启动导航/定位链后自动发一次 /initialpose; false=只等 game_progress 触发')
 
     use_serial = LaunchConfiguration('use_serial')
     enable_decision = LaunchConfiguration('enable_decision')
@@ -244,6 +250,23 @@ def generate_launch_description():
         condition=navigation_localization_enabled,
     )
 
+    initial_pose_manager_delayed = TimerAction(
+        period=3.5,
+        actions=[Node(
+            package='rm_bringup',
+            executable='initial_pose_manager.py',
+            name='rm_initial_pose_manager',
+            output='screen',
+            parameters=[
+                initial_pose_params,
+                {
+                    'publish_on_startup': LaunchConfiguration('initial_pose_publish_on_startup'),
+                },
+            ],
+        )],
+        condition=navigation_localization_enabled,
+    )
+
     # ------------------------------------------------------------------
     # 节点 3a: vision_detector — use_serial=true 时延迟 4s 启动
     # ------------------------------------------------------------------
@@ -352,6 +375,7 @@ def generate_launch_description():
         declare_use_sim_time,
         declare_lidar_z,
         declare_global_map_path,
+        declare_initial_pose_publish_on_startup,
         # 节点
         hw_bridge_node,
         hik_camera_delayed,
@@ -360,6 +384,7 @@ def generate_launch_description():
         livox_driver_launch,
         point_lio_delayed,
         global_localization_delayed,
+        initial_pose_manager_delayed,
         vision_delayed,
         vision_quick,
         autoaim_delayed,

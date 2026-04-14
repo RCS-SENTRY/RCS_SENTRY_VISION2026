@@ -132,6 +132,7 @@ private:
   double fitness_threshold_;
   double relocalization_timeout_sec_;
   double spin_threshold_rad_s_;
+  double global_map_republish_sec_;
   bool enable_reset_odom_on_recovery_;
 
   tf2_ros::Buffer tf_buffer_;

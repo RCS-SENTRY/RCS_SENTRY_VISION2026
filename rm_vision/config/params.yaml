@@ -23,13 +23,21 @@ rm_vision_detector:
     confidence_threshold: 0.12            # 最终输出门槛（调低排查 raw=0）
 
     # ===== 敌我颜色（比赛前必查！） =====
-    # target_color: 白名单 — 只打什么颜色的敌人
+    # prefer_referee_robot_id=true 时:
+    #   - 优先使用 /gimbal_status.robot_id 推导我方阵营
+    #   - 红方(1~11)  => 打蓝色, 忽略红色
+    #   - 蓝方(101~111)=> 打红色, 忽略蓝色
+    #   - 若裁判信息无效/未上来, 再回退到下面 target_color / color_ignore
+    prefer_referee_robot_id: true
+    gimbal_status_topic: "/gimbal_status"
+
+    # target_color: fallback 白名单 — 只打什么颜色的敌人
     #   "red"  = 只打红色装甲板
     #   "blue" = 只打蓝色装甲板
     #   "all"  = 红蓝都打（测试用）
     target_color: "red"
 
-    # color_ignore: 黑名单 — 不打什么颜色（我方颜色）
+    # color_ignore: fallback 黑名单 — 不打什么颜色（我方颜色）
     #   0 = 忽略红色（我方红）
     #   1 = 忽略蓝色（我方蓝）
     #  -1 = 不过滤

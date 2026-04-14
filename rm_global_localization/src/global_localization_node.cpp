@@ -282,6 +282,7 @@ LocalizationNode::LocalizationNode()
     this->declare_parameter<double>("relocalization_timeout_sec", 1.0);
   tf_lookup_timeout_sec_ = this->declare_parameter<double>("tf_lookup_timeout_sec", 0.05);
   spin_threshold_rad_s_ = this->declare_parameter<double>("spin_threshold_rad_s", 5.0);
+  global_map_republish_sec_ = this->declare_parameter<double>("global_map_republish_sec", 5.0);
   enable_reset_odom_on_recovery_ =
     this->declare_parameter<bool>("enable_reset_odom_on_recovery", true);
   reset_odom_service_ =
@@ -294,9 +295,12 @@ LocalizationNode::LocalizationNode()
   map_manager_ = std::make_unique<MapManager>(
     this->get_logger(), map_path, map_voxel_size, num_neighbors, num_threads);
   publish_global_map();
-  global_map_timer_ = this->create_wall_timer(
-    std::chrono::seconds(1),
-    [this]() { publish_global_map(); });
+  if (global_map_republish_sec_ > 0.0) {
+    global_map_timer_ = this->create_wall_timer(
+      std::chrono::duration_cast<std::chrono::nanoseconds>(
+        std::chrono::duration<double>(global_map_republish_sec_)),
+      [this]() { publish_global_map(); });
+  }
   registration_engine_ = std::make_unique<RegistrationEngine>(
     scan_voxel_size,
     num_neighbors,
@@ -329,12 +333,13 @@ LocalizationNode::LocalizationNode()
 
   RCLCPP_INFO(
     this->get_logger(),
-    "rm_global_localization ready. waiting for /initialpose, cloud_topic=%s odom_topic=%s map=%s fitness_threshold=%.3f spin_threshold=%.2f reset_odom=%s timeout=%.2fs",
+    "rm_global_localization ready. waiting for /initialpose, cloud_topic=%s odom_topic=%s map=%s fitness_threshold=%.3f spin_threshold=%.2f global_map_republish=%.1fs reset_odom=%s timeout=%.2fs",
     cloud_topic.c_str(),
     odom_topic_.c_str(),
     map_path.c_str(),
     fitness_threshold_,
     spin_threshold_rad_s_,
+    global_map_republish_sec_,
     enable_reset_odom_on_recovery_ ? reset_odom_service_.c_str() : "disabled",
     relocalization_timeout_sec_);
 }
