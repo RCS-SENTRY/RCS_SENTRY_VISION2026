@@ -17,6 +17,7 @@ install(DIRECTORY config/
 install(PROGRAMS
   scripts/cmd_vel_to_nav_cmd.py
   scripts/initial_pose_manager.py
+  scripts/pcd2pgm.py
   DESTINATION lib/${PROJECT_NAME}
 )
 

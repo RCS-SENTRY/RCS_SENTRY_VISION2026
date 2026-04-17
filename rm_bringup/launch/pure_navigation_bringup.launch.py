@@ -122,6 +122,7 @@ def generate_launch_description():
         name="lifecycle_manager_navigation",
         output="screen",
         parameters=[
+            params_file,
             {"use_sim_time": use_sim_time},
             {"autostart": autostart},
             {"node_names": lifecycle_nodes},

@@ -78,5 +78,5 @@
             scan_bodyframe_pub_en: false   # Don't publish body-frame scan (saves bandwidth)
 
         pcd_save:
-            pcd_save_en: false           # Disable PCD saving by default
+            pcd_save_en: false           # Enable PCD saving for mapping
             interval: -1

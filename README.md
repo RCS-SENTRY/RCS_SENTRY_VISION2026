@@ -229,15 +229,44 @@ cp point_lio/PCD/scans.pcd ~/Desktop/SENTRY_FULL/RMUC2026_lab_test.pcd
 
 ### 6.2 推荐链路
 
-明天上车如果需要完整 Nav2，请按这条线：
+现在优先使用仓库内工具直接导出二维图：
 
-1. 用 Point-LIO 录出 `PCD`
-2. 在 CloudCompare 打开 PCD
-3. 做高度裁剪 / 去除无关高层结构
-4. 顶视图正交投影
-5. 导出为二维黑白图（`png/pgm`）
-6. 在图像软件里清理成占据栅格
-7. 写 `map.yaml`
+```bash
+cd ~/Desktop/SENTRY_FULL/XMU_RCS_SENTRY
+source /opt/ros/humble/setup.bash
+source install/setup.bash
+
+python3 rm_bringup/scripts/pcd2pgm.py \
+  /absolute/path/to/your_map.pcd \
+  --output-dir /absolute/path/to/output_dir \
+  --map-name rmuc2026_nav \
+  --resolution 0.05 \
+  --z-min 0.15 \
+  --z-max 1.80 \
+  --ground-band-min -0.20 \
+  --ground-band-max 0.10 \
+  --radius-outlier-nb-points 2 \
+  --radius-outlier-radius 0.15 \
+  --closing-kernel 3 \
+  --known-dilate-kernel 3
+```
+
+这版工具会做：
+
+1. `PCD` 读取
+2. 自动判断输入单位是 `m` 还是 `mm`
+3. 主地面对齐，兼容倾斜安装 LiDAR
+4. 高度裁剪
+5. 可选地面带 / 障碍带分离
+6. 半径离群点清理
+7. 形态学开闭运算
+8. 输出 `pgm + yaml`
+
+补充说明：
+
+- `PCD` 继续给 `small_gicp / rm_global_localization` 用
+- `PGM/YAML` 只给 Nav2 `map_server` 用
+- 如果手里是历史遗留的毫米制 PCD，这个脚本只会在导出二维图时做尺度归一化，不会改你的原始 PCD
 
 ### 6.3 `map.yaml` 示例
 
@@ -274,6 +303,9 @@ ros2 launch rm_bringup sentry_bringup.launch.py \
   global_map_path:=/home/rm/Desktop/SENTRY_FULL/RMUC2026_lab_test.pcd
 ```
 
+建议优先使用 Point-LIO 自己录出来的米制地图，例如 `point_lio/PCD/scans.pcd` 或其拷贝版本。
+历史外部 PCD 若是毫米坐标，不能直接拿来和当前 Point-LIO 输出做 small_gicp 配准。
+
 ### 7.2 当前输出
 
 - `map -> odom -> base_link`
@@ -297,10 +329,12 @@ ros2 launch rm_bringup sentry_bringup.launch.py \
 
 ### 8.1 现在这版 Nav2 包含什么
 
-- 全局规划器：`SmacPlanner2D`
-- 局部控制器：`MPPIController`
+- 全局规划器：`NavfnPlanner`
+- 局部控制器：`DWBLocalPlanner`
 - 全向底盘配置：允许 `vx / vy / wz`
-- `local_costmap` 直接吃 `/cloud_registered` 的 3D 点云，压成 2D 障碍
+- `local/global costmap`：`static_layer + obstacle_layer + inflation_layer`
+- `obstacle_layer` 直接吃 Livox 驱动原始 `PointCloud2`：`/livox/lidar/pointcloud`
+- BT 使用官方 `navigate_to_pose_w_replanning_and_recovery.xml`
 - 不启用 `amcl`
 
 参数文件：
@@ -325,6 +359,17 @@ source install/setup.bash
 
 ros2 launch rm_bringup pure_navigation_bringup.launch.py \
   map:=/absolute/path/to/your_map.yaml
+```
+
+如果想一键把定位链和 Nav2 都拉起来，也可以：
+
+```bash
+ros2 launch rm_bringup sentry_bringup.launch.py \
+  navigation_only:=true \
+  enable_global_localization:=true \
+  global_map_path:=/absolute/path/to/your_map.pcd \
+  enable_nav2:=true \
+  nav2_map_yaml:=/absolute/path/to/your_map.yaml
 ```
 
 ### 8.3 输出到底盘

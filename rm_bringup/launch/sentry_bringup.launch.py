@@ -48,6 +48,7 @@ def generate_launch_description():
     point_lio_launch = os.path.join(point_lio_dir,  'launch', 'point_lio.launch.py')
     global_loc_launch = os.path.join(global_loc_dir, 'launch', 'global_localization.launch.py')
     initial_pose_params = os.path.join(bringup_dir, 'config', 'initial_pose_manager.yaml')
+    pure_nav_launch = os.path.join(bringup_dir, 'launch', 'pure_navigation_bringup.launch.py')
 
     # ------------------------------------------------------------------
     # Launch 参数声明
@@ -100,9 +101,24 @@ def generate_launch_description():
         'use_sim_time', default_value='false',
         description='Use simulation clock for LiDAR / LIO stack')
 
+    declare_lidar_x = DeclareLaunchArgument(
+        'lidar_x', default_value='0.0',
+        description='Static TF: livox_frame forward offset from base_link (m)')
+    declare_lidar_y = DeclareLaunchArgument(
+        'lidar_y', default_value='0.2',
+        description='Static TF: livox_frame left offset from base_link (m)')
     declare_lidar_z = DeclareLaunchArgument(
-        'lidar_z', default_value='0.5',
+        'lidar_z', default_value='0.35',
         description='Static TF: livox_frame height above base_link (m)')
+    declare_lidar_roll = DeclareLaunchArgument(
+        'lidar_roll', default_value='0.0',
+        description='Static TF: livox_frame roll (rad) in base_link frame')
+    declare_lidar_pitch = DeclareLaunchArgument(
+        'lidar_pitch', default_value='0.3115',
+        description='Static TF: livox_frame pitch (rad) in base_link frame — rear raised ~17.85 deg')
+    declare_lidar_yaw = DeclareLaunchArgument(
+        'lidar_yaw', default_value='1.5708',
+        description='Static TF: livox_frame yaw (rad) in base_link frame — front rotated 90 deg left')
 
     declare_global_map_path = DeclareLaunchArgument(
         'global_map_path', default_value='/home/rm/Desktop/SENTRY_FULL/RMUC2026.pcd',
@@ -111,12 +127,23 @@ def generate_launch_description():
     declare_initial_pose_publish_on_startup = DeclareLaunchArgument(
         'initial_pose_publish_on_startup', default_value='true',
         description='true=启动导航/定位链后自动发一次 /initialpose; false=只等 game_progress 触发')
+    declare_enable_nav2 = DeclareLaunchArgument(
+        'enable_nav2', default_value='false',
+        description='true=在定位链后继续启动纯 Nav2 框架; false=仅启动定位链')
+    declare_nav2_map_yaml = DeclareLaunchArgument(
+        'nav2_map_yaml', default_value='',
+        description='Absolute path to Nav2 static map yaml (required when enable_nav2=true)')
+    declare_nav2_params_file = DeclareLaunchArgument(
+        'nav2_params_file',
+        default_value=os.path.join(bringup_dir, 'config', 'sentry_nav2_params.yaml'),
+        description='Nav2 params file used by pure_navigation_bringup.launch.py')
 
     use_serial = LaunchConfiguration('use_serial')
     enable_decision = LaunchConfiguration('enable_decision')
     enable_navigation = LaunchConfiguration('enable_navigation')
     navigation_only = LaunchConfiguration('navigation_only')
     enable_global_localization = LaunchConfiguration('enable_global_localization')
+    enable_nav2 = LaunchConfiguration('enable_nav2')
     serial_enabled = IfCondition(PythonExpression([
         "'", use_serial, "' == 'true' and '", navigation_only, "' == 'false'"
     ]))
@@ -129,6 +156,10 @@ def generate_launch_description():
     navigation_localization_enabled = IfCondition(PythonExpression([
         "('", enable_navigation, "' == 'true' or '", navigation_only, "' == 'true') and '",
         enable_global_localization, "' == 'true'"
+    ]))
+    navigation_nav2_enabled = IfCondition(PythonExpression([
+        "('", enable_navigation, "' == 'true' or '", navigation_only, "' == 'true') and '",
+        enable_nav2, "' == 'true'"
     ]))
     decision_enabled = IfCondition(PythonExpression([
         "'", enable_decision, "' == 'true' and '", navigation_only, "' == 'false'"
@@ -190,12 +221,12 @@ def generate_launch_description():
             executable='static_transform_publisher',
             name='base_link_to_livox_frame',
             arguments=[
-                '--x', '0.0',
-                '--y', '0.0',
+                '--x', LaunchConfiguration('lidar_x'),
+                '--y', LaunchConfiguration('lidar_y'),
                 '--z', LaunchConfiguration('lidar_z'),
-                '--roll', '0.0',
-                '--pitch', '0.0',
-                '--yaw', '0.0',
+                '--roll', LaunchConfiguration('lidar_roll'),
+                '--pitch', LaunchConfiguration('lidar_pitch'),
+                '--yaw', LaunchConfiguration('lidar_yaw'),
                 '--frame-id', 'base_link',
                 '--child-frame-id', 'livox_frame',
             ],
@@ -265,6 +296,21 @@ def generate_launch_description():
             ],
         )],
         condition=navigation_localization_enabled,
+    )
+
+    nav2_bringup_delayed = TimerAction(
+        period=4.5,
+        actions=[IncludeLaunchDescription(
+            PythonLaunchDescriptionSource(pure_nav_launch),
+            launch_arguments={
+                'map': LaunchConfiguration('nav2_map_yaml'),
+                'params_file': LaunchConfiguration('nav2_params_file'),
+                'use_sim_time': LaunchConfiguration('use_sim_time'),
+                'autostart': 'true',
+                'log_level': 'info',
+            }.items(),
+        )],
+        condition=navigation_nav2_enabled,
     )
 
     # ------------------------------------------------------------------
@@ -373,9 +419,17 @@ def generate_launch_description():
         declare_navigation_only,
         declare_enable_global_localization,
         declare_use_sim_time,
+        declare_lidar_x,
+        declare_lidar_y,
         declare_lidar_z,
+        declare_lidar_roll,
+        declare_lidar_pitch,
+        declare_lidar_yaw,
         declare_global_map_path,
         declare_initial_pose_publish_on_startup,
+        declare_enable_nav2,
+        declare_nav2_map_yaml,
+        declare_nav2_params_file,
         # 节点
         hw_bridge_node,
         hik_camera_delayed,
@@ -385,6 +439,7 @@ def generate_launch_description():
         point_lio_delayed,
         global_localization_delayed,
         initial_pose_manager_delayed,
+        nav2_bringup_delayed,
         vision_delayed,
         vision_quick,
         autoaim_delayed,

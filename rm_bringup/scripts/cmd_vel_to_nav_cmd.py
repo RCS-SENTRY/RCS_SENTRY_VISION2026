@@ -4,6 +4,7 @@ import rclpy
 from geometry_msgs.msg import Twist
 from rclpy.node import Node
 from rclpy.executors import ExternalShutdownException
+from rclpy.qos import QoSPresetProfiles
 from rm_interfaces.msg import NavCmd
 
 
@@ -23,7 +24,9 @@ class CmdVelToNavCmd(Node):
         if publish_rate_hz <= 1e-6:
             publish_rate_hz = 20.0
 
-        self.nav_cmd_pub = self.create_publisher(NavCmd, output_topic, 10)
+        self.nav_cmd_pub = self.create_publisher(
+            NavCmd, output_topic, QoSPresetProfiles.SENSOR_DATA.value
+        )
         self.cmd_vel_sub = self.create_subscription(
             Twist, input_topic, self.on_cmd_vel, 10
         )
@@ -32,7 +35,7 @@ class CmdVelToNavCmd(Node):
         self.latest_cmd = Twist()
         self.latest_cmd_time = self.get_clock().now()
         self.has_cmd = False
-        self.stop_sent = False
+        self.timeout_reported = False
 
         self.get_logger().info(
             "cmd_vel_to_nav_cmd ready: %s -> %s, timeout=%.2fs"
@@ -43,7 +46,7 @@ class CmdVelToNavCmd(Node):
         self.latest_cmd = msg
         self.latest_cmd_time = self.get_clock().now()
         self.has_cmd = True
-        self.stop_sent = False
+        self.timeout_reported = False
         self.nav_cmd_pub.publish(self.twist_to_nav_cmd(msg))
 
     def on_timer(self) -> None:
@@ -55,11 +58,11 @@ class CmdVelToNavCmd(Node):
             self.nav_cmd_pub.publish(self.twist_to_nav_cmd(self.latest_cmd))
             return
 
-        if not self.stop_sent:
-            self.nav_cmd_pub.publish(self.twist_to_nav_cmd(Twist()))
-            self.stop_sent = True
+        self.nav_cmd_pub.publish(self.twist_to_nav_cmd(Twist()))
+        if not self.timeout_reported:
+            self.timeout_reported = True
             self.get_logger().warn(
-                "cmd_vel timeout %.3fs > %.3fs, publishing zero /nav_cmd once"
+                "cmd_vel timeout %.3fs > %.3fs, publishing continuous zero /nav_cmd"
                 % (age, self.cmd_vel_timeout_sec)
             )
 
