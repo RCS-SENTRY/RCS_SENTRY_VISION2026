@@ -1,13 +1,10 @@
-# XMU_RCS_SENTRY
+# XMU RoboMaster 哨兵 2026 赛季 ROS 2 工作区
 
-XMU RoboMaster 哨兵 2026 赛季 ROS 2 工作区。  
 当前仓库包含三条底层能力链：
 
-- 视觉自瞄链：`rm_hik_driver -> rm_vision -> rm_autoaim -> rm_hw_bridge`
-- 定位链：`Mid360 -> Point-LIO -> small_gicp -> map->odom->base_link`
-- 纯底层导航链：`small_gicp TF + /cloud_registered + Nav2 -> /cmd_vel -> /nav_cmd`
-
-这份 README 按“明天能上车”的顺序来写，只保留真正落地要用的流程。
+- **视觉自瞄链**：`rm_hik_driver → rm_vision → rm_autoaim → rm_hw_bridge`
+- **定位链**：`Mid360 → Point-LIO → small_gicp → map→odom→base_link`
+- **导航链**：`Nav2(NavFn+DWB) → /cmd_vel → /nav_cmd → rm_hw_bridge → 底盘`
 
 ---
 
@@ -16,15 +13,16 @@ XMU RoboMaster 哨兵 2026 赛季 ROS 2 工作区。
 | 包 | 作用 |
 |---|---|
 | `rm_interfaces` | 自定义消息：`GimbalStatus`、`GimbalCmd`、`NavCmd`、`LocalizationStatus` 等 |
-| `rm_hw_bridge` | 串口桥，负责上下位机协议翻译；`game_progress`、`robot_id` 从这里上来 |
+| `rm_hw_bridge` | 串口桥，上下位机协议翻译；`game_progress`、`robot_id` 从这里上来 |
 | `rm_hik_driver` | 海康相机驱动 |
-| `rm_vision` | YOLO 装甲板检测；现在支持“裁判 `robot_id` 优先决定敌我颜色” |
+| `rm_vision` | YOLO 装甲板检测；支持裁判 `robot_id` 自动决定敌我颜色 |
 | `rm_autoaim` | PnP、Tracker、Aimer、自瞄命令发布 |
 | `rm_livox_driver` | Mid360 驱动 bringup |
-| `point_lio` / `rm_point_lio` | Point-LIO 本体与 wrapper |
-| `rm_global_localization` | 基于 `small_gicp` 的全局重定位，输出 `map -> odom` |
-| `rm_bringup` | 全仓启动编排、Nav2 参数、`cmd_vel` 桥接、`initial_pose` 管理 |
+| `rm_point_lio` | Point-LIO wrapper（参数覆盖） |
+| `point_lio` | Point-LIO 本体 |
+| `rm_global_localization` | 基于 `small_gicp` 的全局重定位，输出 `map → odom` TF |
 | `small_gicp` | header-only 配准库 |
+| `rm_bringup` | 全仓启动编排、Nav2 参数、`cmd_vel` 桥接、`initial_pose` 管理、障碍点云过滤 |
 
 ---
 
@@ -44,142 +42,172 @@ XMU RoboMaster 哨兵 2026 赛季 ROS 2 工作区。
 cd ~/Desktop/SENTRY_FULL/XMU_RCS_SENTRY
 source /opt/ros/humble/setup.bash
 
-# 第一次建议全编
+# 全编
 colcon build --symlink-install
-
 source install/setup.bash
 ```
 
-如果之前目录搬过位置，建议先清掉旧产物：
+如果搬过目录，先清旧产物：
 
 ```bash
 rm -rf build/ install/ log/
 colcon build --symlink-install
 ```
 
----
+只编导航相关（不含自瞄/视觉）：
 
-## 3. 裁判信息、敌我识别、`initialpose`
-
-### 3.1 裁判信息从哪里来
-
-下位机通过 `rm_hw_bridge` 上行到：
-
-- `/gimbal_status.game_progress`
-- `/gimbal_status.robot_id`
-
-当前协议约定：
-
-- `game_progress`
-  - `0` 未开始比赛
-  - `1` 准备阶段
-  - `2` 15 秒裁判系统自检
-  - `3` 5 秒倒计时
-  - `4` 比赛中
-  - `5` 比赛结算
-
-- `robot_id`
-  - 红方：`1 ~ 11`
-  - 蓝方：`101 ~ 111`
-
-### 3.2 敌我识别现在怎么做
-
-`rm_vision` 现在的优先级是：
-
-1. 优先使用 `/gimbal_status.robot_id` 推导己方颜色
-2. 自动反推敌方目标颜色
-3. 如果裁判信息无效或没有上来，再回退到 YAML：
-   - `target_color`
-   - `color_ignore`
-
-所以：
-
-- 红方机器人：自动打蓝色、忽略红色
-- 蓝方机器人：自动打红色、忽略蓝色
-- 纯调试没裁判信息：走 `rm_vision/config/params.yaml`
-
-### 3.3 `initialpose` 现在谁来发
-
-现在由 `rm_bringup` 里的 `rm_initial_pose_manager` 节点负责。
-
-逻辑是：
-
-1. 启动导航/定位链后，默认会发一轮 startup `initialpose`
-2. 如果后续收到 `game_progress == 3`，会再按当前 `robot_id` 重发一轮
-3. 比赛时这轮倒计时触发是第一优先级
-4. 平时测试没有裁判信息时，startup 发布保证能直接调试
-
-起始位姿参数在：
-
-- [initial_pose_manager.yaml](./rm_bringup/config/initial_pose_manager.yaml)
-
-需要填的关键项：
-
-```yaml
-red_start_pose:  [x, y, z, yaw_deg]
-blue_start_pose: [x, y, z, yaw_deg]
-fallback_robot_id: 7
+```bash
+colcon build --symlink-install \
+  --packages-skip rm_vision rm_autoaim rm_hik_driver
 ```
 
 ---
 
-## 4. 标定
+## 3. 地图文件位置
 
-### 4.1 相机内参 + 畸变
+### 3.1 PCD 地图（给 small_gicp 定位用）
 
-填写到：
+| 文件 | 路径 | 说明 |
+|------|------|------|
+| 赛事先验地图 | `~/Desktop/SENTRY_FULL/RMUC2026.pcd` | 官方/先验 PCD |
+| 实验室建图 | `~/Desktop/SENTRY_FULL/scans.pcd` | Point-LIO 最新建图结果 |
 
-- [rm_autoaim/config/params.yaml](./rm_autoaim/config/params.yaml)
+### 3.2 二维栅格地图（给 Nav2 map_server 用）
 
-关键字段：
+所有二维地图统一放在 `~/Desktop/SENTRY_FULL/lab_maps/` 下：
 
-```yaml
-camera_matrix: [fx, 0, cx, 0, fy, cy, 0, 0, 1]
-dist_coeffs: [k1, k2, p1, p2, k3]
-```
+| 文件 | 说明 |
+|------|------|
+| `lab_maps/test_v2.yaml` + `test_v2.pgm` | **当前推荐使用的导航地图** |
+| `lab_maps/test_v2_obstacle_mask.pgm` | 障碍物掩膜 |
+| `lab_maps/test_v2_ground_mask.pgm` | 地面掩膜 |
+| `lab_maps/test_v2_known_mask.pgm` | 已知区域掩膜 |
+| `lab_maps/nav_map.yaml` + `nav_map.pgm` | 另一版导航地图 |
+| `lab_maps/test.yaml` + `test.pgm` | 早期测试地图 |
 
-### 4.2 相机到云台外参
+### 3.3 一句话总结
 
-同样在：
-
-- [rm_autoaim/config/params.yaml](./rm_autoaim/config/params.yaml)
-
-关键字段：
-
-```yaml
-r_cam_to_gimbal: [...]
-t_cam_to_gimbal: [...]
-```
-
-### 4.3 雷达到车体外参
-
-当前 `base_link -> livox_frame` 静态 TF 是在：
-
-- [sentry_bringup.launch.py](./rm_bringup/launch/sentry_bringup.launch.py)
-
-统一发布的。
-
-注意：
-
-- 现在 launch 里默认只显式参数化了 `z`
-- 如果明天雷达重新标定后存在 `x/y/roll/pitch/yaw` 偏角，必须同步修改这里
-- **先验地图、Point-LIO、small_gicp、Nav2 的坐标一致性都依赖这条 TF**
-
-一句话：
-
-**雷达外参变了，就必须重新验证定位；如果是自建地图，通常还要重建。**
+- **PCD** → `small_gicp` / `rm_global_localization` 做定位配准
+- **PGM + YAML** → Nav2 `map_server` 做全局规划
+- 两者必须基于同一次建图，坐标系一致
 
 ---
 
-## 5. 建图：Mid360 -> Point-LIO -> PCD
+## 4. 启动模式
 
-### 5.1 开启建图模式
+所有启动都通过一个 launch 文件：`sentry_bringup.launch.py`
 
-Point-LIO 的建图保存开关在：
+### 4.1 模式一：完整整车（自瞄 + 导航 + 串口）
 
-- [mid360_point_lio.yaml](./rm_point_lio/config/mid360_point_lio.yaml)
+```bash
+source install/setup.bash
 
-建图前确认：
+ros2 launch rm_bringup sentry_bringup.launch.py \
+  use_serial:=true \
+  enable_navigation:=true \
+  enable_global_localization:=true \
+  enable_nav2:=true \
+  global_map_path:=/home/rm/Desktop/SENTRY_FULL/scans.pcd \
+  nav2_map_yaml:=/home/rm/Desktop/SENTRY_FULL/lab_maps/test_v2.yaml \
+  serial_device:=/dev/ttyUSB0
+```
+
+启动内容：
+- `rm_hw_bridge`（串口）
+- `rm_hik_driver`（相机，延迟 2s）
+- `rm_vision` + `rm_autoaim`（自瞄，延迟 4s）
+- Livox + Point-LIO（定位链，延迟 0.5s + 1.5s）
+- `rm_global_localization`（重定位，延迟 3s）
+- Nav2 全栈（延迟 4.5s）
+
+### 4.2 模式二：纯导航（含串口，不含自瞄）
+
+**日常调导航用这个。**
+
+```bash
+source install/setup.bash
+
+ros2 launch rm_bringup sentry_bringup.launch.py \
+  navigation_only:=true \
+  use_serial:=true \
+  enable_global_localization:=true \
+  enable_nav2:=true \
+  global_map_path:=/home/rm/Desktop/SENTRY_FULL/scans.pcd \
+  nav2_map_yaml:=/home/rm/Desktop/SENTRY_FULL/lab_maps/test_v2.yaml
+```
+
+启动内容：
+- `rm_hw_bridge`（串口）
+- Livox + Point-LIO + small_gicp + Nav2
+- **不启动**相机/自瞄
+
+### 4.3 模式三：纯自瞄（无导航）
+
+```bash
+source install/setup.bash
+
+ros2 launch rm_bringup sentry_bringup.launch.py \
+  use_serial:=true \
+  serial_device:=/dev/ttyUSB0
+```
+
+启动内容：
+- `rm_hw_bridge`（串口）
+- 相机 + 自瞄栈
+- **不启动**导航
+
+### 4.4 模式四：纯定位链（调定位/建图）
+
+```bash
+source install/setup.bash
+
+ros2 launch rm_bringup sentry_bringup.launch.py \
+  navigation_only:=true \
+  use_serial:=false
+```
+
+只启动 Livox + Point-LIO，用于建图或调试定位。
+
+### 4.5 模式五：纯 Nav2（定位链已单独运行时）
+
+```bash
+source install/setup.bash
+
+ros2 launch rm_bringup pure_navigation_bringup.launch.py \
+  map:=/home/rm/Desktop/SENTRY_FULL/lab_maps/test_v2.yaml \
+  params_file:=/home/rm/Desktop/SENTRY_FULL/XMU_RCS_SENTRY/rm_bringup/config/sentry_nav2_params.yaml
+```
+
+---
+
+## 5. Launch 参数速查
+
+| 参数 | 默认值 | 说明 |
+|------|--------|------|
+| `use_serial` | `true` | 启动串口 (`rm_hw_bridge`) |
+| `serial_device` | `/dev/ttyUSB0` | 串口设备路径 |
+| `baudrate` | `460800` | 波特率 |
+| `navigation_only` | `false` | 仅启动导航链（不含相机/自瞄） |
+| `enable_navigation` | `false` | 启动导航链（含相机/自瞄） |
+| `enable_global_localization` | `false` | 启动 small_gicp 重定位 |
+| `enable_nav2` | `false` | 启动 Nav2 导航栈 |
+| `global_map_path` | `.../RMUC2026.pcd` | PCD 地图路径 |
+| `nav2_map_yaml` | `""` | 二维地图 YAML 路径 |
+| `enable_decision` | `false` | 启动 sentry_bt 决策 |
+| `use_sim_time` | `false` | 使用仿真时钟 |
+| `nav2_rviz` | `true` | Nav2 启动时开 RViz |
+| `color_ignore` | `1` | 忽略颜色：0=红, 1=蓝, -1=无 |
+| `target_color` | `red` | 目标颜色：red/blue/all |
+| `publish_debug_image` | `false` | 发布调试图像 |
+| `model_path` | `model/yolo11.xml` | OpenVINO 模型路径 |
+
+---
+
+## 6. 建图：Mid360 → Point-LIO → PCD
+
+### 6.1 开启建图模式
+
+修改 `rm_point_lio/config/mid360_point_lio.yaml`：
 
 ```yaml
 pcd_save:
@@ -187,59 +215,32 @@ pcd_save:
   interval: -1
 ```
 
-### 5.2 启动纯导航链（只起雷达和 Point-LIO）
+### 6.2 启动并建图
 
 ```bash
-cd ~/Desktop/SENTRY_FULL/XMU_RCS_SENTRY
-source /opt/ros/humble/setup.bash
-source install/setup.bash
-
-ros2 launch rm_bringup sentry_bringup.launch.py navigation_only:=true
+ros2 launch rm_bringup sentry_bringup.launch.py \
+  navigation_only:=true use_serial:=false
 ```
 
-### 5.3 建图动作
-
-- 上电后静止 `5~10s`
-- 再缓慢移动雷达或车体
-- 尽量覆盖完整实验室 / 场地
+- 静止 5~10s 让 IMU 初始化
+- 缓慢移动覆盖场地
 - 尽量回到起点做回环
 
-### 5.4 退出并保存
+### 6.3 保存
 
-正常 `Ctrl+C` 退出后，PCD 会落到：
-
-- `point_lio/PCD/scans.pcd`
-
-建议立刻复制成固定名字：
+`Ctrl+C` 退出后 PCD 落到 `point_lio/PCD/scans.pcd`，立即备份：
 
 ```bash
-cp point_lio/PCD/scans.pcd ~/Desktop/SENTRY_FULL/RMUC2026_lab_test.pcd
+cp point_lio/PCD/scans.pcd ~/Desktop/SENTRY_FULL/scans.pcd
 ```
 
----
-
-## 6. PCD -> PGM / YAML：给 Nav2 用的二维地图
-
-### 6.1 先分清楚
-
-- `PCD`：给 `small_gicp` 做定位
-- `PGM/PNG + YAML`：给 Nav2 `map_server` 做二维全局规划
-
-**只有 PCD，不够跑当前这版完整 Nav2。**
-
-### 6.2 推荐链路
-
-现在优先使用仓库内工具直接导出二维图：
+### 6.4 PCD → PGM/YAML
 
 ```bash
-cd ~/Desktop/SENTRY_FULL/XMU_RCS_SENTRY
-source /opt/ros/humble/setup.bash
-source install/setup.bash
-
 python3 rm_bringup/scripts/pcd2pgm.py \
-  /absolute/path/to/your_map.pcd \
-  --output-dir /absolute/path/to/output_dir \
-  --map-name rmuc2026_nav \
+  ~/Desktop/SENTRY_FULL/scans.pcd \
+  --output-dir ~/Desktop/SENTRY_FULL/lab_maps \
+  --map-name my_map \
   --resolution 0.05 \
   --z-min 0.15 \
   --z-max 1.80 \
@@ -251,229 +252,182 @@ python3 rm_bringup/scripts/pcd2pgm.py \
   --known-dilate-kernel 3
 ```
 
-这版工具会做：
+---
 
-1. `PCD` 读取
-2. 自动判断输入单位是 `m` 还是 `mm`
-3. 主地面对齐，兼容倾斜安装 LiDAR
-4. 高度裁剪
-5. 可选地面带 / 障碍带分离
-6. 半径离群点清理
-7. 形态学开闭运算
-8. 输出 `pgm + yaml`
+## 7. 裁判信息、敌我识别、initialpose
 
-补充说明：
+### 7.1 裁判信息
 
-- `PCD` 继续给 `small_gicp / rm_global_localization` 用
-- `PGM/YAML` 只给 Nav2 `map_server` 用
-- 如果手里是历史遗留的毫米制 PCD，这个脚本只会在导出二维图时做尺度归一化，不会改你的原始 PCD
+下位机通过 `rm_hw_bridge` 上行：
+- `/gimbal_status.game_progress`：`0`=未开始, `1`=准备, `2`=自检, `3`=倒计时, `4`=比赛中, `5`=结算
+- `/gimbal_status.robot_id`：红方 `1~11`，蓝方 `101~111`
 
-### 6.3 `map.yaml` 示例
+### 7.2 敌我识别
+
+`rm_vision` 优先级：
+1. 用 `robot_id` 推导己方颜色 → 自动反推敌方
+2. 无裁判信息时回退 YAML 的 `target_color` / `color_ignore`
+
+### 7.3 初始位姿
+
+`rm_initial_pose_manager` 负责：
+1. 启动后自动发一轮 `/initialpose`
+2. 收到 `game_progress == 3` 时按 `robot_id` 重发
+
+配置在 `rm_bringup/config/initial_pose_manager.yaml`：
 
 ```yaml
-image: RMUC2026_lab_test.pgm
-mode: trinary
-resolution: 0.05
-origin: [0.0, 0.0, 0.0]
-negate: 0
-occupied_thresh: 0.65
-free_thresh: 0.25
-```
-
-### 6.4 一句话总结
-
-明天完整链路是：
-
-`Mid360 -> Point-LIO -> PCD -> 2D栅格图(pgm/yaml) -> Nav2`
-
----
-
-## 7. 全局重定位：small_gicp
-
-### 7.1 启动链
-
-```bash
-cd ~/Desktop/SENTRY_FULL/XMU_RCS_SENTRY
-source /opt/ros/humble/setup.bash
-source install/setup.bash
-
-ros2 launch rm_bringup sentry_bringup.launch.py \
-  navigation_only:=true \
-  enable_global_localization:=true \
-  global_map_path:=/home/rm/Desktop/SENTRY_FULL/RMUC2026_lab_test.pcd
-```
-
-建议优先使用 Point-LIO 自己录出来的米制地图，例如 `point_lio/PCD/scans.pcd` 或其拷贝版本。
-历史外部 PCD 若是毫米坐标，不能直接拿来和当前 Point-LIO 输出做 small_gicp 配准。
-
-### 7.2 当前输出
-
-- `map -> odom -> base_link`
-- `/global_map`
-- `/localized_pose`
-- `/localization_status`
-
-### 7.3 `/initialpose` 的作用
-
-它是给 `small_gicp` 一个**局部收敛初值**，不是给底盘直接开车的。
-
-当前这套不是“完全无先验全局定位”，而是：
-
-- 有先验地图
-- 有一个大致初始位姿
-- 然后做 scan-to-map 局部收敛
-
----
-
-## 8. 纯底层 Nav2
-
-### 8.1 现在这版 Nav2 包含什么
-
-- 全局规划器：`NavfnPlanner`
-- 局部控制器：`DWBLocalPlanner`
-- 全向底盘配置：允许 `vx / vy / wz`
-- `local/global costmap`：`static_layer + obstacle_layer + inflation_layer`
-- `obstacle_layer` 直接吃 Livox 驱动原始 `PointCloud2`：`/livox/lidar/pointcloud`
-- BT 使用官方 `navigate_to_pose_w_replanning_and_recovery.xml`
-- 不启用 `amcl`
-
-参数文件：
-
-- [sentry_nav2_params.yaml](./rm_bringup/config/sentry_nav2_params.yaml)
-
-启动文件：
-
-- [pure_navigation_bringup.launch.py](./rm_bringup/launch/pure_navigation_bringup.launch.py)
-
-### 8.2 启动 Nav2
-
-前提：
-
-1. 定位链已经输出稳定的 `map -> odom -> base_link`
-2. 你已经有一张二维 `map.yaml`
-
-```bash
-cd ~/Desktop/SENTRY_FULL/XMU_RCS_SENTRY
-source /opt/ros/humble/setup.bash
-source install/setup.bash
-
-ros2 launch rm_bringup pure_navigation_bringup.launch.py \
-  map:=/absolute/path/to/your_map.yaml
-```
-
-如果想一键把定位链和 Nav2 都拉起来，也可以：
-
-```bash
-ros2 launch rm_bringup sentry_bringup.launch.py \
-  navigation_only:=true \
-  enable_global_localization:=true \
-  global_map_path:=/absolute/path/to/your_map.pcd \
-  enable_nav2:=true \
-  nav2_map_yaml:=/absolute/path/to/your_map.yaml
-```
-
-### 8.3 输出到底盘
-
-当前 Nav2 输出链：
-
-`/cmd_vel -> cmd_vel_to_nav_cmd.py -> /nav_cmd -> rm_hw_bridge -> 下位机 NAVI`
-
-这条链只做纯底层速度桥接，不带战术逻辑。
-
----
-
-## 9. 完整测试链路
-
-### 9.1 视觉自瞄
-
-```bash
-ros2 launch rm_bringup sentry_bringup.launch.py
-```
-
-### 9.2 雷达建图
-
-```bash
-ros2 launch rm_bringup sentry_bringup.launch.py navigation_only:=true
-```
-
-### 9.3 定位验收
-
-```bash
-ros2 launch rm_bringup sentry_bringup.launch.py \
-  navigation_only:=true \
-  enable_global_localization:=true \
-  global_map_path:=/home/rm/Desktop/SENTRY_FULL/RMUC2026_lab_test.pcd
-```
-
-### 9.4 底层 Nav2
-
-先起定位链，再起：
-
-```bash
-ros2 launch rm_bringup pure_navigation_bringup.launch.py \
-  map:=/absolute/path/to/map.yaml
+red_start_pose:  [x, y, z, yaw_deg]   # ← 按先验地图坐标填写
+blue_start_pose: [x, y, z, yaw_deg]   # ← 按先验地图坐标填写
+fallback_robot_id: 7
 ```
 
 ---
 
-## 10. 明天上车最重要的检查项
+## 8. 标定
+
+### 8.1 相机内参
+
+填写到 `rm_autoaim/config/params.yaml`：
+
+```yaml
+camera_matrix: [fx, 0, cx, 0, fy, cy, 0, 0, 1]
+dist_coeffs: [k1, k2, p1, p2, k3]
+```
+
+### 8.2 相机到云台外参
+
+同样在 `rm_autoaim/config/params.yaml`：
+
+```yaml
+r_cam_to_gimbal: [...]
+t_cam_to_gimbal: [...]
+```
+
+### 8.3 雷达到车体外参
+
+`base_link → livox_frame` 静态 TF 在 `sentry_bringup.launch.py` 的 launch 参数中：
+
+| 参数 | 默认值 | 说明 |
+|------|--------|------|
+| `lidar_x` | `0.0` | 前向偏移 (m) |
+| `lidar_y` | `0.2` | 左向偏移 (m) |
+| `lidar_z` | `0.35` | 高度 (m) |
+| `lidar_roll` | `0.0` | 横滚 (rad) |
+| `lidar_pitch` | `0.3115` | 俯仰 (rad)，后仰 ~17.85° |
+| `lidar_yaw` | `1.5708` | 偏航 (rad)，左转 90° |
+
+**雷达外参变了，就必须重新验证定位，自建地图通常还要重建。**
+
+---
+
+## 9. 导航架构说明
+
+### 9.1 Nav2 配置
+
+| 组件 | 配置 |
+|------|------|
+| Planner | `NavFnPlanner`（A*） |
+| Controller | `DWBLocalPlanner`（全向：vx/vy/wz） |
+| Global Costmap | `static_layer` + `inflation_layer` |
+| Local Costmap | `obstacle_layer`（吃 `/nav_obstacle_cloud`）+ `inflation_layer` |
+| BT | `navigate_to_pose_w_replanning_and_recovery.xml` |
+| AMCL | **不启用**（由 `rm_global_localization` 提供定位） |
+
+参数文件：`rm_bringup/config/sentry_nav2_params.yaml`
+
+### 9.2 速度输出链
+
+```
+Nav2 controller_server → /cmd_vel (Twist)
+  → cmd_vel_to_nav_cmd.py → /nav_cmd (NavCmd)
+    → rm_hw_bridge → 串口 → 底盘 NAVI
+```
+
+### 9.3 障碍物感知链
+
+```
+Point-LIO → /cloud_registered (PointCloud2)
+  → obstacle_cloud_filter.py → /nav_obstacle_cloud (过滤后障碍点云)
+    → Nav2 local_costmap obstacle_layer
+```
+
+`obstacle_cloud_filter.py` 的作用：
+- 从 Point-LIO 注册点云中提取障碍物
+- 高度裁剪（去掉地面和天花板）
+- 转换到 `odom` 坐标系
+- 输出给 Nav2 local costmap
+
+---
+
+## 10. 职责边界（不要打乱）
+
+| 模块 | 职责 | 不做 |
+|------|------|------|
+| `rm_hw_bridge` | 协议桥 | 不加业务逻辑 |
+| `rm_vision` | 检测+颜色过滤 | 不做追踪/瞄准 |
+| `rm_autoaim` | PnP/Tracker/Aimer | 不做检测 |
+| `point_lio` | 局部 odom (`odom→base_link`) | 不管全局 |
+| `rm_global_localization` | 全局定位 (`map→odom`) | 不管局部 odom |
+| `rm_bringup` | 启动编排+Nav2+桥接 | 不做定位/自瞄 |
+| `obstacle_cloud_filter` | 点云过滤给 costmap | 不做配准/定位 |
+
+---
+
+## 11. 常用调试命令
+
+```bash
+# 查 Nav2 各节点 lifecycle 状态
+ros2 lifecycle list /bt_navigator
+ros2 lifecycle get /controller_server
+
+# 查速度输出
+ros2 topic echo /cmd_vel
+ros2 topic hz /nav_cmd
+
+# 查定位状态
+ros2 topic echo /localization_status
+
+# 查 TF 链
+ros2 run tf2_ros tf2_echo map base_link
+
+# 查裁判状态
+ros2 topic echo /gimbal_status
+
+# 查障碍点云
+ros2 topic hz /nav_obstacle_cloud
+
+# 查 initialpose
+ros2 topic echo /initialpose
+```
+
+---
+
+## 12. 上车检查清单
 
 ### 雷达标定前
 
-- [ ] `base_link -> livox_frame` 外参是否最新
-- [ ] `red_start_pose / blue_start_pose` 是否按先验地图填写
+- [ ] `base_link → livox_frame` 外参是否最新（launch 参数）
+- [ ] `red_start_pose / blue_start_pose` 是否按先验地图坐标填写
 - [ ] `fallback_robot_id` 是否正确
 
 ### 定位前
 
 - [ ] `global_map_path` 指向正确 PCD
-- [ ] `/global_map`、`/localized_pose`、`/localization_status` 正常
+- [ ] `/cloud_registered` 正常发布
 - [ ] `/initialpose` 是否已自动发出
+- [ ] `map → odom → base_link` TF 链完整
 
 ### Nav2 前
 
-- [ ] 已经有 `pgm/png + yaml`
-- [ ] `map -> odom -> base_link` 稳定
-- [ ] `/cloud_registered` 正常
+- [ ] 已有 `pgm + yaml` 二维地图
+- [ ] `map → odom → base_link` 稳定
+- [ ] `/nav_obstacle_cloud` 正常发布
+- [ ] 串口设备路径正确（`ls /dev/ttyUSB*`）
 
----
+### 自瞄前
 
-## 11. 常用命令
-
-### 看裁判状态
-
-```bash
-ros2 topic echo /gimbal_status
-```
-
-### 看定位状态
-
-```bash
-ros2 topic echo /localization_status
-```
-
-### 看 `initialpose` 是否被发布
-
-```bash
-ros2 topic echo /initialpose
-```
-
-### 看 Nav2 输出
-
-```bash
-ros2 topic hz /cmd_vel
-ros2 topic hz /nav_cmd
-```
-
----
-
-## 12. 当前工程约定
-
-- `rm_hw_bridge`：只做协议桥，不加业务逻辑
-- `rm_vision`：负责检测与敌我颜色过滤
-- `rm_autoaim`：负责 PnP / Tracker / Aimer / `/gimbal_cmd`
-- `point_lio`：只管局部 odom
-- `rm_global_localization`：只管 `map -> odom`
-- `rm_bringup`：做启动编排、`initialpose` 管理、Nav2 纯底层桥接
-
-这条边界后面尽量不要再打乱。
+- [ ] 相机内参已标定
+- [ ] 相机到云台外参已标定
+- [ ] 模型文件路径正确
+- [ ] `color_ignore` / `target_color` 配置正确（或依赖裁判系统自动判断）
