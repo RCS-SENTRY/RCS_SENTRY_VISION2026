@@ -147,6 +147,9 @@ def generate_launch_description():
     navigation_only = LaunchConfiguration('navigation_only')
     enable_global_localization = LaunchConfiguration('enable_global_localization')
     enable_nav2 = LaunchConfiguration('enable_nav2')
+    # hw_bridge 只要 use_serial=true 就启动，不受 navigation_only 限制
+    serial_hw_enabled = IfCondition(use_serial)
+    # 相机/视觉/自瞄需要 use_serial=true 且不是 navigation_only 模式
     serial_enabled = IfCondition(PythonExpression([
         "'", use_serial, "' == 'true' and '", navigation_only, "' == 'false'"
     ]))
@@ -183,7 +186,7 @@ def generate_launch_description():
                 'baudrate':      LaunchConfiguration('baudrate'),
             },
         ],
-        condition=serial_enabled,
+        condition=serial_hw_enabled,  # 只要 use_serial=true 就启动，不受 navigation_only 限制
     )
 
     # ------------------------------------------------------------------

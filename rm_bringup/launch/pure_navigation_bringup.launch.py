@@ -1,16 +1,15 @@
 """
-pure_navigation_bringup.launch.py — 纯 Nav2 导航栈启动
+pure_navigation_bringup.launch.py — 纯 Nav2 导航栈启动 (v2)
+
+启动内容:
+  1. obstacle_cloud_filter — 从 /cloud_registered 提取障碍点云
+  2. Nav2 全栈 (map_server, planner, controller, behavior, bt_navigator)
+  3. cmd_vel_to_nav_cmd — 速度桥接
+  4. RViz2 调试
 
 用法:
   ros2 launch rm_bringup pure_navigation_bringup.launch.py \
-    map:=/path/to/map.yaml \
-    rviz:=true
-
-  # 调试模式（不自动 activate，手动控制 lifecycle）
-  ros2 launch rm_bringup pure_navigation_bringup.launch.py \
-    map:=/path/to/map.yaml \
-    autostart:=false \
-    rviz:=true
+    map:=/path/to/map.yaml
 """
 
 import os
@@ -48,6 +47,25 @@ def _build_nodes(context, *args, **kwargs):
         "behavior_server",
         "bt_navigator",
     ]
+
+    # --- 障碍点云过滤节点 ---
+    obstacle_filter = Node(
+        package="rm_bringup",
+        executable="obstacle_cloud_filter.py",
+        name="obstacle_cloud_filter",
+        output="screen",
+        parameters=[{
+            "input_topic": "/cloud_registered",
+            "output_topic": "/nav_obstacle_cloud",
+            "z_min": 0.10,
+            "z_max": 1.50,
+            "min_range": 0.20,
+            "max_range": 5.00,
+            "voxel_size": 0.10,
+            "use_sim_time": use_sim_time,
+        }],
+        arguments=["--ros-args", "--log-level", log_level],
+    )
 
     map_server = Node(
         package="nav2_map_server",
@@ -142,6 +160,7 @@ def _build_nodes(context, *args, **kwargs):
     )
 
     return [
+        obstacle_filter,
         map_server,
         planner_server,
         controller_server,
@@ -161,28 +180,23 @@ def generate_launch_description():
 
         DeclareLaunchArgument(
             "map", default_value="",
-            description="二维占据栅格地图 yaml 绝对路径（供 map_server / global_costmap 使用）",
+            description="二维占据栅格地图 yaml 绝对路径",
         ),
         DeclareLaunchArgument(
             "use_sim_time", default_value="false",
-            description="是否使用仿真时钟",
         ),
         DeclareLaunchArgument(
             "autostart", default_value="true",
-            description="是否自动激活 Nav2 生命周期节点",
         ),
         DeclareLaunchArgument(
             "params_file",
             default_value=os.path.join(bringup_dir, "config", "sentry_nav2_params.yaml"),
-            description="Nav2 参数文件路径",
         ),
         DeclareLaunchArgument(
             "log_level", default_value="info",
-            description="日志等级",
         ),
         DeclareLaunchArgument(
             "rviz", default_value="true",
-            description="是否启动 RViz2 调试可视化",
         ),
 
         OpaqueFunction(function=_build_nodes),
