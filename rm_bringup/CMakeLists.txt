@@ -13,6 +13,11 @@ install(DIRECTORY config/
   DESTINATION share/${PROJECT_NAME}/config
 )
 
+# 安装 RViz 配置
+install(DIRECTORY rviz/
+  DESTINATION share/${PROJECT_NAME}/rviz
+)
+
 # 安装轻量脚本节点
 install(PROGRAMS
   scripts/cmd_vel_to_nav_cmd.py

@@ -129,8 +129,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--align-ground",
         action=argparse.BooleanOptionalAction,
-        default=True,
-        help="是否先估计主地面并对齐到 +Z",
+        default=False,
+        help="是否先估计主地面并对齐到 +Z [默认关闭: Point-LIO 输出已经是 gravity-aligned]",
     )
     parser.add_argument(
         "--ground-distance-threshold",
@@ -638,6 +638,15 @@ def save_outputs(
     return pgm_path, yaml_path
 
 
+def _save_debug_pgm(path: Path, mask: np.ndarray) -> None:
+    """保存一个二值 mask 为 PGM（白=255, 黑=0），方便用 eog/feh 直接查看。"""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("wb") as f:
+        header = f"P5\n{mask.shape[1]} {mask.shape[0]}\n255\n".encode("ascii")
+        f.write(header)
+        f.write(mask.tobytes())
+
+
 def main() -> None:
     args = parse_args()
     map_name = args.map_name or args.pcd.stem
@@ -676,6 +685,17 @@ def main() -> None:
     occupied_mask = morphology(occupied_mask, "close", args.closing_kernel)
 
     map_image = build_map_image(free_mask, occupied_mask)
+
+    # ---- 保存调试中间产物 ----
+    args.output_dir.mkdir(parents=True, exist_ok=True)
+    debug_ground = args.output_dir / f"{map_name}_ground_mask.pgm"
+    debug_obstacle = args.output_dir / f"{map_name}_obstacle_mask.pgm"
+    debug_known = args.output_dir / f"{map_name}_known_mask.pgm"
+    _save_debug_pgm(debug_ground, free_mask)
+    _save_debug_pgm(debug_obstacle, occupied_mask)
+    known_mask = ((map_image == FREE_VALUE) | (map_image == OCCUPIED_VALUE)).astype(np.uint8) * 255
+    _save_debug_pgm(debug_known, known_mask)
+
     pgm_path, yaml_path = save_outputs(
         map_image=map_image,
         bounds=bounds,
@@ -684,21 +704,38 @@ def main() -> None:
         map_name=map_name,
     )
 
+    # ---- 统计诊断 ----
+    total_pixels = map_image.size
+    free_px = int(np.count_nonzero(map_image == FREE_VALUE))
+    occ_px = int(np.count_nonzero(map_image == OCCUPIED_VALUE))
+    unk_px = int(np.count_nonzero(map_image == UNKNOWN_VALUE))
+
+    print("=" * 60)
     print("pcd2pgm finished")
+    print("=" * 60)
     print(f"  input_pcd          : {args.pcd}")
     print(f"  output_pgm         : {pgm_path}")
     print(f"  output_yaml        : {yaml_path}")
     print(f"  resolution         : {args.resolution:.3f} m/cell")
     print(f"  meters_per_unit    : {meters_per_unit:.6f} ({unit_reason})")
-    print(f"  aligned_ground     : {args.align_ground}")
-    print(f"  transform_matrix   :\n{transform}")
+    print(f"  align_ground       : {args.align_ground}")
     print(f"  raw_points         : {len(raw_points)}")
     print(f"  filtered_points    : {len(filtered_points)}")
-    print(f"  known_points       : {len(known_points)}")
     print(f"  ground_points      : {len(ground_points)}")
     print(f"  obstacle_points    : {len(obstacle_points)}")
-    print(f"  map_size           : {bounds.width} x {bounds.height}")
-    print("  note               : PCD 继续给 small_gicp 用；PGM/YAML 给 Nav2 用")
+    print(f"  map_size           : {bounds.width} x {bounds.height} ({total_pixels} px)")
+    print(f"  free  (254)        : {free_px:>8d} px  ({free_px/total_pixels*100:.1f}%)")
+    print(f"  occ   (  0)        : {occ_px:>8d} px  ({occ_px/total_pixels*100:.1f}%)")
+    print(f"  unk   (205)        : {unk_px:>8d} px  ({unk_px/total_pixels*100:.1f}%)")
+    print(f"  debug_ground_mask  : {debug_ground}")
+    print(f"  debug_obstacle_mask: {debug_obstacle}")
+    print(f"  debug_known_mask   : {debug_known}")
+    if free_px + occ_px == 0:
+        print("  *** WARNING: 地图全 unknown! 检查 z 切片 / align-ground / 单位 ***")
+    elif occ_px == 0:
+        print("  *** WARNING: 没有检测到障碍物! 检查 obstacle-min-z / max-z ***")
+    print("  note               : PCD → small_gicp; PGM/YAML → Nav2")
+    print("=" * 60)
 
 
 if __name__ == "__main__":

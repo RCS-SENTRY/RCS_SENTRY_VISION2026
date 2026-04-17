@@ -137,6 +137,9 @@ def generate_launch_description():
         'nav2_params_file',
         default_value=os.path.join(bringup_dir, 'config', 'sentry_nav2_params.yaml'),
         description='Nav2 params file used by pure_navigation_bringup.launch.py')
+    declare_nav2_rviz = DeclareLaunchArgument(
+        'nav2_rviz', default_value='true',
+        description='true=Nav2 启动时同时打开 RViz 调试界面')
 
     use_serial = LaunchConfiguration('use_serial')
     enable_decision = LaunchConfiguration('enable_decision')
@@ -308,6 +311,7 @@ def generate_launch_description():
                 'use_sim_time': LaunchConfiguration('use_sim_time'),
                 'autostart': 'true',
                 'log_level': 'info',
+                'rviz': LaunchConfiguration('nav2_rviz'),
             }.items(),
         )],
         condition=navigation_nav2_enabled,
@@ -430,6 +434,7 @@ def generate_launch_description():
         declare_enable_nav2,
         declare_nav2_map_yaml,
         declare_nav2_params_file,
+        declare_nav2_rviz,
         # 节点
         hw_bridge_node,
         hik_camera_delayed,
