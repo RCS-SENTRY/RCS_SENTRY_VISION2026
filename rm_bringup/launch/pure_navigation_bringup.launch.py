@@ -2,7 +2,7 @@
 pure_navigation_bringup.launch.py — 纯 Nav2 导航栈启动 (v2)
 
 启动内容:
-  1. obstacle_cloud_filter — 从 /cloud_registered 提取障碍点云
+  1. obstacle_cloud_filter_node — 从 raw lidar PointCloud2 生成局部障碍云
   2. Nav2 全栈 (map_server, planner, controller, behavior, bt_navigator)
   3. cmd_vel_to_nav_cmd — 速度桥接
   4. RViz2 调试
@@ -38,6 +38,9 @@ def _build_nodes(context, *args, **kwargs):
     use_sim_time = LaunchConfiguration("use_sim_time")
     autostart = LaunchConfiguration("autostart")
     log_level = LaunchConfiguration("log_level")
+    obstacle_primary_topic = LaunchConfiguration("obstacle_primary_topic")
+    obstacle_secondary_topic = LaunchConfiguration("obstacle_secondary_topic")
+    obstacle_output_topic = LaunchConfiguration("obstacle_output_topic")
 
     remappings = [("/tf", "tf"), ("/tf_static", "tf_static")]
     lifecycle_nodes = [
@@ -51,17 +54,27 @@ def _build_nodes(context, *args, **kwargs):
     # --- 障碍点云过滤节点 ---
     obstacle_filter = Node(
         package="rm_bringup",
-        executable="obstacle_cloud_filter.py",
+        executable="obstacle_cloud_filter_node",
         name="obstacle_cloud_filter",
         output="screen",
         parameters=[{
-            "input_topic": "/cloud_registered",
-            "output_topic": "/nav_obstacle_cloud",
-            "z_min": 0.10,
-            "z_max": 1.50,
+            "primary_input_topic": obstacle_primary_topic,
+            "secondary_input_topic": obstacle_secondary_topic,
+            "output_topic": obstacle_output_topic,
+            "target_frame": "base_link",
+            "min_height": 0.05,
+            "max_height": 1.50,
             "min_range": 0.20,
             "max_range": 5.00,
-            "voxel_size": 0.10,
+            "voxel_leaf_size": 0.10,
+            "merge_timeout_sec": 0.20,
+            "transform_timeout_sec": 0.05,
+            "body_box.enabled": True,
+            "body_box.min": [-0.42, -0.34, -0.20],
+            "body_box.max": [0.42, 0.34, 0.45],
+            "gimbal_box.enabled": True,
+            "gimbal_box.min": [0.08, -0.18, 0.18],
+            "gimbal_box.max": [0.62, 0.18, 0.90],
             "use_sim_time": use_sim_time,
         }],
         arguments=["--ros-args", "--log-level", log_level],
@@ -197,6 +210,21 @@ def generate_launch_description():
         ),
         DeclareLaunchArgument(
             "rviz", default_value="true",
+        ),
+        DeclareLaunchArgument(
+            "obstacle_primary_topic",
+            default_value="/livox/lidar/pointcloud",
+            description="Raw lidar PointCloud2 topic used by local obstacle filtering",
+        ),
+        DeclareLaunchArgument(
+            "obstacle_secondary_topic",
+            default_value="",
+            description="Optional second raw lidar PointCloud2 topic for future fusion",
+        ),
+        DeclareLaunchArgument(
+            "obstacle_output_topic",
+            default_value="/nav_obstacle_cloud",
+            description="Filtered obstacle cloud topic consumed by Nav2 local costmap",
         ),
 
         OpaqueFunction(function=_build_nodes),

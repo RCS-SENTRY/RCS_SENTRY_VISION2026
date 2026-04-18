@@ -140,6 +140,15 @@ def generate_launch_description():
     declare_nav2_rviz = DeclareLaunchArgument(
         'nav2_rviz', default_value='true',
         description='true=Nav2 启动时同时打开 RViz 调试界面')
+    declare_nav_obstacle_primary_topic = DeclareLaunchArgument(
+        'nav_obstacle_primary_topic', default_value='/livox/lidar/pointcloud',
+        description='Raw lidar PointCloud2 topic for Nav2 local obstacle chain')
+    declare_nav_obstacle_secondary_topic = DeclareLaunchArgument(
+        'nav_obstacle_secondary_topic', default_value='',
+        description='Optional second raw lidar PointCloud2 topic for future local obstacle fusion')
+    declare_nav_obstacle_output_topic = DeclareLaunchArgument(
+        'nav_obstacle_output_topic', default_value='/nav_obstacle_cloud',
+        description='Filtered obstacle cloud topic for Nav2 local costmap')
 
     use_serial = LaunchConfiguration('use_serial')
     enable_decision = LaunchConfiguration('enable_decision')
@@ -315,6 +324,9 @@ def generate_launch_description():
                 'autostart': 'true',
                 'log_level': 'info',
                 'rviz': LaunchConfiguration('nav2_rviz'),
+                'obstacle_primary_topic': LaunchConfiguration('nav_obstacle_primary_topic'),
+                'obstacle_secondary_topic': LaunchConfiguration('nav_obstacle_secondary_topic'),
+                'obstacle_output_topic': LaunchConfiguration('nav_obstacle_output_topic'),
             }.items(),
         )],
         condition=navigation_nav2_enabled,
@@ -438,6 +450,9 @@ def generate_launch_description():
         declare_nav2_map_yaml,
         declare_nav2_params_file,
         declare_nav2_rviz,
+        declare_nav_obstacle_primary_topic,
+        declare_nav_obstacle_secondary_topic,
+        declare_nav_obstacle_output_topic,
         # 节点
         hw_bridge_node,
         hik_camera_delayed,
