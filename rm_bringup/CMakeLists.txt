@@ -12,7 +12,9 @@ find_package(pcl_conversions REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(sensor_msgs REQUIRED)
 find_package(tf2_ros REQUIRED)
+find_package(livox_ros_driver2 REQUIRED)
 
+# ---- obstacle_cloud_filter_node (Nav2 障碍点云过滤) ----
 add_executable(obstacle_cloud_filter_node
   src/obstacle_cloud_filter_node.cpp
 )
@@ -35,7 +37,25 @@ ament_target_dependencies(obstacle_cloud_filter_node
   tf2_ros
 )
 
-install(TARGETS obstacle_cloud_filter_node
+# ---- self_point_filter_node (建图链自车点云剔除) ----
+add_executable(self_point_filter_node
+  src/self_point_filter_node.cpp
+)
+
+target_compile_features(self_point_filter_node PUBLIC cxx_std_17)
+
+target_link_libraries(self_point_filter_node
+  Eigen3::Eigen
+)
+
+ament_target_dependencies(self_point_filter_node
+  livox_ros_driver2
+  rclcpp
+  sensor_msgs
+  tf2_ros
+)
+
+install(TARGETS obstacle_cloud_filter_node self_point_filter_node
   DESTINATION lib/${PROJECT_NAME}
 )
 
@@ -59,6 +79,7 @@ install(PROGRAMS
   scripts/cmd_vel_to_nav_cmd.py
   scripts/initial_pose_manager.py
   scripts/pcd2pgm.py
+  scripts/fake_lidar_publisher.py
   DESTINATION lib/${PROJECT_NAME}
 )
 

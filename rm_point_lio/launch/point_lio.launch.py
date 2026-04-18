@@ -9,8 +9,8 @@ Architecture: Wrapper Isolation Principle
   - We launch point_lio's node directly with our config.
 
 Data flow:
-  /livox/lidar (PointCloud2 from rm_livox_driver, xfer_format=0)
-  /livox/imu   (Imu from rm_livox_driver)
+  /livox/lidar/self_filtered (CustomMsg, from self_point_filter_node — 自车已剔除)
+  /livox/imu                 (Imu from rm_livox_driver)
        |
        v
   pointlio_mapping (point_lio)

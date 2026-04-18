@@ -83,6 +83,11 @@ Eigen::Matrix<double, 30, 30> P_init_output_reset = Eigen::Matrix<double, 30, 30
 
 auto logger = rclcpp::get_logger("laserMapping");
 
+inline rclcpp::Time now_ros_time() {
+    static rclcpp::Clock ros_clock(RCL_ROS_TIME);
+    return ros_clock.now();
+}
+
 void SigHandle(int sig) {
     flg_exit = true;
     RCLCPP_WARN(logger, "catch sig %d", sig);
@@ -764,11 +769,9 @@ void publish_odometry(const rclcpp::Publisher<nav_msgs::msg::Odometry>::SharedPt
     odomAftMapped.header.frame_id = odom_header_frame_id;
     odomAftMapped.child_frame_id = odom_child_frame_id;
 
-    if (publish_odometry_without_downsample) {
-        odomAftMapped.header.stamp = get_ros_time(time_current);
-    } else {
-        odomAftMapped.header.stamp = get_ros_time(lidar_end_time);
-    }
+    // Publish odom->base_link in the current ROS time domain so Nav2 can
+    // consistently compose it with map->odom without stale-sensor extrapolation.
+    odomAftMapped.header.stamp = now_ros_time();
     set_posestamp(odomAftMapped.pose.pose);
     set_twist(odomAftMapped.twist.twist);
 
@@ -821,7 +824,7 @@ void publish_path(const rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr &pubPa
 
     set_posestamp(msg_body_pose.pose);
     // msg_body_pose.header.stamp = ros::Time::now();
-    msg_body_pose.header.stamp = get_ros_time(lidar_end_time);
+    msg_body_pose.header.stamp = odomAftMapped.header.stamp;
     msg_body_pose.header.frame_id = odom_header_frame_id;
     static int jjj = 0;
     jjj++;
@@ -838,7 +841,7 @@ int main(int argc, char **argv) {
     readParameters(nh);
     cout << "lidar_type: " << lidar_type << endl;
 
-    path.header.stamp = get_ros_time(lidar_end_time);
+    path.header.stamp = odomAftMapped.header.stamp;
     path.header.frame_id = odom_header_frame_id;
 
     /*** variables definition for counting ***/

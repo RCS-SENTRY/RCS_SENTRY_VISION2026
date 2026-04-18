@@ -643,8 +643,14 @@ void LocalizationNode::on_registered_cloud(const sensor_msgs::msg::PointCloud2::
 
 void LocalizationNode::publish_map_to_odom(const builtin_interfaces::msg::Time & stamp)
 {
+  (void)stamp;
+  const auto now = this->now();
+  builtin_interfaces::msg::Time now_msg;
+  const auto now_ns = now.nanoseconds();
+  now_msg.sec = static_cast<int32_t>(now_ns / 1000000000LL);
+  now_msg.nanosec = static_cast<uint32_t>(now_ns % 1000000000LL);
   tf_broadcaster_.sendTransform(
-    isometry_to_transform(T_map_odom_, map_frame_, odom_frame_, stamp));
+    isometry_to_transform(T_map_odom_, map_frame_, odom_frame_, now_msg));
 }
 
 void LocalizationNode::publish_localized_pose(

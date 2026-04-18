@@ -21,6 +21,11 @@ def generate_launch_description():
         default_value='false',
         description='Use simulation clock')
 
+    declare_enable_reset_odom_on_recovery = DeclareLaunchArgument(
+        'enable_reset_odom_on_recovery',
+        default_value='true',
+        description='Whether to call /reset_odom after recovery')
+
     node = Node(
         package='rm_global_localization',
         executable='global_localization_node',
@@ -31,6 +36,7 @@ def generate_launch_description():
             {
                 'map_path': LaunchConfiguration('map_path'),
                 'use_sim_time': LaunchConfiguration('use_sim_time'),
+                'enable_reset_odom_on_recovery': LaunchConfiguration('enable_reset_odom_on_recovery'),
             },
         ],
     )
@@ -38,5 +44,6 @@ def generate_launch_description():
     return LaunchDescription([
         declare_map_path,
         declare_use_sim_time,
+        declare_enable_reset_odom_on_recovery,
         node,
     ])

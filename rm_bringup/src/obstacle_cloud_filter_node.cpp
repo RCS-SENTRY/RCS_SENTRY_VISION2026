@@ -112,27 +112,50 @@ public:
     merge_timeout_sec_ = this->declare_parameter<double>("merge_timeout_sec", 0.20);
     transform_timeout_sec_ = this->declare_parameter<double>("transform_timeout_sec", 0.05);
 
+    // ---- Exclusion boxes (基于 50x50x55cm 车体 + 小云台 + 单雷达偏装 y=+0.2m) ----
     body_box_.name = "body_exclusion_box";
     body_box_.enabled = this->declare_parameter<bool>("body_box.enabled", true);
     body_box_.min = toVector3(
       this->declare_parameter<std::vector<double>>(
-        "body_box.min", {-0.42, -0.34, -0.20}),
+        "body_box.min", {-0.30, -0.30, -0.10}),
       "body_box.min");
     body_box_.max = toVector3(
       this->declare_parameter<std::vector<double>>(
-        "body_box.max", {0.42, 0.34, 0.45}),
+        "body_box.max", {0.30, 0.30, 0.60}),
       "body_box.max");
 
     gimbal_box_.name = "gimbal_exclusion_box";
     gimbal_box_.enabled = this->declare_parameter<bool>("gimbal_box.enabled", true);
     gimbal_box_.min = toVector3(
       this->declare_parameter<std::vector<double>>(
-        "gimbal_box.min", {0.08, -0.18, 0.18}),
+        "gimbal_box.min", {-0.15, -0.15, 0.40}),
       "gimbal_box.min");
     gimbal_box_.max = toVector3(
       this->declare_parameter<std::vector<double>>(
-        "gimbal_box.max", {0.62, 0.18, 0.90}),
+        "gimbal_box.max", {0.15, 0.15, 0.80}),
       "gimbal_box.max");
+
+    gimbal_support_box_.name = "gimbal_support_exclusion_box";
+    gimbal_support_box_.enabled = this->declare_parameter<bool>("gimbal_support_box.enabled", true);
+    gimbal_support_box_.min = toVector3(
+      this->declare_parameter<std::vector<double>>(
+        "gimbal_support_box.min", {-0.08, -0.08, 0.25}),
+      "gimbal_support_box.min");
+    gimbal_support_box_.max = toVector3(
+      this->declare_parameter<std::vector<double>>(
+        "gimbal_support_box.max", {0.08, 0.08, 0.45}),
+      "gimbal_support_box.max");
+
+    lidar_arm_box_.name = "lidar_arm_exclusion_box";
+    lidar_arm_box_.enabled = this->declare_parameter<bool>("lidar_arm_box.enabled", true);
+    lidar_arm_box_.min = toVector3(
+      this->declare_parameter<std::vector<double>>(
+        "lidar_arm_box.min", {-0.05, 0.10, 0.20}),
+      "lidar_arm_box.min");
+    lidar_arm_box_.max = toVector3(
+      this->declare_parameter<std::vector<double>>(
+        "lidar_arm_box.max", {0.10, 0.35, 0.50}),
+      "lidar_arm_box.max");
 
     if (min_height_ >= max_height_) {
       throw std::runtime_error("min_height must be smaller than max_height");
@@ -143,7 +166,7 @@ public:
 
     publisher_ = this->create_publisher<sensor_msgs::msg::PointCloud2>(
       output_topic_,
-      rclcpp::SensorDataQoS());
+      rclcpp::QoS(rclcpp::KeepLast(20)).reliable());
 
     primary_sub_ = this->create_subscription<sensor_msgs::msg::PointCloud2>(
       primary_input_topic_,
@@ -241,7 +264,8 @@ private:
         continue;
       }
 
-      if (body_box_.contains(point) || gimbal_box_.contains(point)) {
+      if (body_box_.contains(point) || gimbal_box_.contains(point) ||
+          gimbal_support_box_.contains(point) || lidar_arm_box_.contains(point)) {
         continue;
       }
 
@@ -330,7 +354,9 @@ private:
 
     sensor_msgs::msg::PointCloud2 output_msg;
     pcl::toROSMsg(*output_cloud, output_msg);
-    output_msg.header.stamp = reference_stamp;
+    (void)reference_stamp;
+    output_msg.header.stamp.sec = 0;
+    output_msg.header.stamp.nanosec = 0;
     output_msg.header.frame_id = target_frame_;
     publisher_->publish(output_msg);
   }
@@ -350,6 +376,8 @@ private:
 
   ExclusionBox body_box_;
   ExclusionBox gimbal_box_;
+  ExclusionBox gimbal_support_box_;
+  ExclusionBox lidar_arm_box_;
 
   std::array<InputState, 2> input_states_;
   std::mutex state_mutex_;

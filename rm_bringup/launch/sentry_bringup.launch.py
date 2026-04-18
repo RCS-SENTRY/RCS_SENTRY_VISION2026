@@ -121,7 +121,7 @@ def generate_launch_description():
         description='Static TF: livox_frame yaw (rad) in base_link frame — front rotated 90 deg left')
 
     declare_global_map_path = DeclareLaunchArgument(
-        'global_map_path', default_value='/home/rm/Desktop/SENTRY_FULL/RMUC2026.pcd',
+        'global_map_path', default_value='/home/rm/Desktop/SENTRY_FULL/maps/self_filtered_scans.pcd',
         description='Absolute path to the static PCD map used by rm_global_localization')
 
     declare_initial_pose_publish_on_startup = DeclareLaunchArgument(
@@ -149,6 +149,9 @@ def generate_launch_description():
     declare_nav_obstacle_output_topic = DeclareLaunchArgument(
         'nav_obstacle_output_topic', default_value='/nav_obstacle_cloud',
         description='Filtered obstacle cloud topic for Nav2 local costmap')
+    declare_global_loc_enable_reset_odom_on_recovery = DeclareLaunchArgument(
+        'global_loc_enable_reset_odom_on_recovery', default_value='false',
+        description='Whether rm_global_localization should call /reset_odom after recovery')
 
     use_serial = LaunchConfiguration('use_serial')
     enable_decision = LaunchConfiguration('enable_decision')
@@ -267,7 +270,29 @@ def generate_launch_description():
     )
 
     # ------------------------------------------------------------------
-    # 节点 2e: Point-LIO — 在雷达之后启动
+    # 节点 2e: self_point_filter — 自车点云剔除 (在雷达之后、Point-LIO之前)
+    # ------------------------------------------------------------------
+    self_point_filter_node = TimerAction(
+        period=1.0,
+        actions=[Node(
+            package='rm_bringup',
+            executable='self_point_filter_node',
+            name='self_point_filter',
+            output='screen',
+            parameters=[{
+                'input_topic': '/livox/lidar',
+                'output_topic': '/livox/lidar/self_filtered',
+                'source_frame': 'livox_frame',
+                'target_frame': 'base_link',
+                'transform_timeout_sec': 0.05,
+                'use_sim_time': LaunchConfiguration('use_sim_time'),
+            }],
+        )],
+        condition=navigation_enabled,
+    )
+
+    # ------------------------------------------------------------------
+    # 节点 2f: Point-LIO — 在自车剔除之后启动
     # ------------------------------------------------------------------
     point_lio_delayed = TimerAction(
         period=1.5,
@@ -291,6 +316,7 @@ def generate_launch_description():
             launch_arguments={
                 'map_path': LaunchConfiguration('global_map_path'),
                 'use_sim_time': LaunchConfiguration('use_sim_time'),
+                'enable_reset_odom_on_recovery': LaunchConfiguration('global_loc_enable_reset_odom_on_recovery'),
             }.items(),
         )],
         condition=navigation_localization_enabled,
@@ -453,12 +479,14 @@ def generate_launch_description():
         declare_nav_obstacle_primary_topic,
         declare_nav_obstacle_secondary_topic,
         declare_nav_obstacle_output_topic,
+        declare_global_loc_enable_reset_odom_on_recovery,
         # 节点
         hw_bridge_node,
         hik_camera_delayed,
         hik_camera_immediate,
         livox_static_tf,
         livox_driver_launch,
+        self_point_filter_node,
         point_lio_delayed,
         global_localization_delayed,
         initial_pose_manager_delayed,
