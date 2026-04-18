@@ -301,6 +301,15 @@ LocalizationNode::LocalizationNode()
         std::chrono::duration<double>(global_map_republish_sec_)),
       [this]() { publish_global_map(); });
   }
+
+  // ★ 周期性重发 map→odom TF（50ms = 20Hz），防止 GICP 失败时 TF 链饿死
+  tf_publish_timer_ = this->create_wall_timer(
+    std::chrono::milliseconds(50),
+    [this]() {
+      if (has_map_odom_) {
+        publish_map_to_odom(this->now());
+      }
+    });
   registration_engine_ = std::make_unique<RegistrationEngine>(
     scan_voxel_size,
     num_neighbors,

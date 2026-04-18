@@ -148,6 +148,7 @@ private:
   rclcpp::Subscription<geometry_msgs::msg::PoseWithCovarianceStamped>::SharedPtr initial_pose_sub_;
   rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr global_map_pub_;
   rclcpp::TimerBase::SharedPtr global_map_timer_;
+  rclcpp::TimerBase::SharedPtr tf_publish_timer_;
   rclcpp::Publisher<geometry_msgs::msg::PoseStamped>::SharedPtr localized_pose_pub_;
   rclcpp::Publisher<rm_interfaces::msg::LocalizationStatus>::SharedPtr
     localization_status_pub_;
