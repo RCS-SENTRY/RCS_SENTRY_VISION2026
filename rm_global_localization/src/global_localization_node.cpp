@@ -390,38 +390,21 @@ void LocalizationNode::on_initial_pose(
     return;
   }
 
-  try {
-    const auto T_odom_base = lookup_odom_to_base(rclcpp::Time(0, 0, this->get_clock()->get_clock_type()));
-    const auto T_map_base = pose_to_isometry(msg->pose.pose);
-    T_map_base_current_ = T_map_base;
-    T_map_odom_ = T_map_base * T_odom_base.inverse();
-    has_map_odom_ = true;
-    is_converged_ = false;
-    state_ = State::RECOVERING;
-
-    const auto stamp =
-      (msg->header.stamp.sec == 0 && msg->header.stamp.nanosec == 0) ?
-      this->now() : rclcpp::Time(msg->header.stamp);
-    publish_map_to_odom(stamp);
-    publish_localized_pose(T_map_base_current_, stamp);
-    publish_localization_status(0.0f, false, stamp);
-
-    RCLCPP_INFO(
-      this->get_logger(),
-      "Initial pose accepted. seeded map->odom from RViz pose at (%.2f, %.2f, %.2f)",
-      T_map_base.translation().x(),
-      T_map_base.translation().y(),
-      T_map_base.translation().z());
-  } catch (const tf2::TransformException & ex) {
-    RCLCPP_WARN(
-      this->get_logger(),
-      "Failed to seed map->odom from /initialpose: %s",
-      ex.what());
+  pending_initial_pose_ = *msg;
+  has_pending_initial_pose_ = true;
+  if (try_seed_map_to_odom_from_initial_pose(*msg, false)) {
+    has_pending_initial_pose_ = false;
   }
 }
 
 void LocalizationNode::on_odometry(const nav_msgs::msg::Odometry::SharedPtr msg)
 {
+  if (has_pending_initial_pose_ && !has_map_odom_) {
+    if (try_seed_map_to_odom_from_initial_pose(pending_initial_pose_, true)) {
+      has_pending_initial_pose_ = false;
+    }
+  }
+
   const auto stamp =
     (msg->header.stamp.sec == 0 && msg->header.stamp.nanosec == 0) ?
     this->now() : rclcpp::Time(msg->header.stamp);
@@ -456,6 +439,59 @@ void LocalizationNode::on_odometry(const nav_msgs::msg::Odometry::SharedPtr msg)
         this->get_logger(),
         "Spin cleared, but no last known good pose is available yet. Staying LOST.");
     }
+  }
+}
+
+bool LocalizationNode::try_seed_map_to_odom_from_initial_pose(
+  const geometry_msgs::msg::PoseWithCovarianceStamped & msg,
+  bool from_retry)
+{
+  try {
+    const auto T_odom_base =
+      lookup_odom_to_base(rclcpp::Time(0, 0, this->get_clock()->get_clock_type()));
+    const auto T_map_base = pose_to_isometry(msg.pose.pose);
+    T_map_base_current_ = T_map_base;
+    T_map_odom_ = T_map_base * T_odom_base.inverse();
+    has_map_odom_ = true;
+    is_converged_ = false;
+    state_ = State::RECOVERING;
+
+    const auto stamp =
+      (msg.header.stamp.sec == 0 && msg.header.stamp.nanosec == 0) ?
+      this->now() : rclcpp::Time(msg.header.stamp);
+    publish_map_to_odom(stamp);
+    publish_localized_pose(T_map_base_current_, stamp);
+    publish_localization_status(0.0f, false, stamp);
+
+    if (from_retry) {
+      RCLCPP_INFO(
+        this->get_logger(),
+        "Initial pose seeded after waiting for odom TF at (%.2f, %.2f, %.2f)",
+        T_map_base.translation().x(),
+        T_map_base.translation().y(),
+        T_map_base.translation().z());
+    } else {
+      RCLCPP_INFO(
+        this->get_logger(),
+        "Initial pose accepted. seeded map->odom from RViz pose at (%.2f, %.2f, %.2f)",
+        T_map_base.translation().x(),
+        T_map_base.translation().y(),
+        T_map_base.translation().z());
+    }
+    return true;
+  } catch (const tf2::TransformException & ex) {
+    if (from_retry) {
+      RCLCPP_DEBUG(
+        this->get_logger(),
+        "Still waiting for odom TF before seeding map->odom from cached /initialpose: %s",
+        ex.what());
+    } else {
+      RCLCPP_WARN(
+        this->get_logger(),
+        "Failed to seed map->odom from /initialpose: %s. Cached pose will be retried once odom TF is available.",
+        ex.what());
+    }
+    return false;
   }
 }
 

@@ -109,6 +109,9 @@ private:
   void on_initial_pose(const geometry_msgs::msg::PoseWithCovarianceStamped::SharedPtr msg);
   void on_odometry(const nav_msgs::msg::Odometry::SharedPtr msg);
   void on_registered_cloud(const sensor_msgs::msg::PointCloud2::SharedPtr msg);
+  bool try_seed_map_to_odom_from_initial_pose(
+    const geometry_msgs::msg::PoseWithCovarianceStamped & msg,
+    bool from_retry);
   void enter_lost(const rclcpp::Time & stamp, const std::string & reason);
   void request_reset_odom(const builtin_interfaces::msg::Time & stamp);
   void handle_reset_odom_response(rclcpp::Client<std_srvs::srv::Empty>::SharedFuture future);
@@ -161,12 +164,14 @@ private:
   bool has_map_odom_ = false;
   bool has_last_known_good_pose_ = false;
   bool has_logged_global_map_publish_ = false;
+  bool has_pending_initial_pose_ = false;
   bool is_converged_ = false;
   bool is_spinning_ = false;
   bool reset_odom_request_in_flight_ = false;
   State state_ = State::NORMAL;
   double last_fitness_score_ = std::numeric_limits<double>::infinity();
   geometry_msgs::msg::PoseStamped pending_reset_pose_;
+  geometry_msgs::msg::PoseWithCovarianceStamped pending_initial_pose_;
   builtin_interfaces::msg::Time pending_reset_stamp_;
   rclcpp::Time last_accepted_alignment_time_{0, 0, RCL_ROS_TIME};
   rclcpp::Time lost_time_{0, 0, RCL_ROS_TIME};
