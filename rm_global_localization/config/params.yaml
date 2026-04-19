@@ -22,6 +22,7 @@ rm_global_localization:
     # Good alignments are expected to be small; start conservative and tune with logs.
     fitness_threshold: 0.2
     relocalization_timeout_sec: 1.0
+    map_to_odom_publish_hz: 20.0
     tf_lookup_timeout_sec: 0.05
     spin_threshold_rad_s: 5.0
     global_map_republish_sec: 5.0

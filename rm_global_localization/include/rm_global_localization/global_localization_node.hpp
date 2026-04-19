@@ -122,12 +122,14 @@ private:
     bool is_converged,
     const builtin_interfaces::msg::Time & stamp);
   Eigen::Isometry3d lookup_odom_to_base(const rclcpp::Time & stamp) const;
+  Eigen::Isometry3d lookup_odom_to_base_latest() const;
 
   std::string map_frame_;
   std::string odom_frame_;
   std::string base_frame_;
   std::string odom_topic_;
   std::string reset_odom_service_;
+  double map_to_odom_publish_hz_;
   double tf_lookup_timeout_sec_;
   double fitness_threshold_;
   double relocalization_timeout_sec_;
@@ -148,7 +150,7 @@ private:
   rclcpp::Subscription<geometry_msgs::msg::PoseWithCovarianceStamped>::SharedPtr initial_pose_sub_;
   rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr global_map_pub_;
   rclcpp::TimerBase::SharedPtr global_map_timer_;
-  rclcpp::TimerBase::SharedPtr tf_publish_timer_;
+  rclcpp::TimerBase::SharedPtr map_to_odom_timer_;
   rclcpp::Publisher<geometry_msgs::msg::PoseStamped>::SharedPtr localized_pose_pub_;
   rclcpp::Publisher<rm_interfaces::msg::LocalizationStatus>::SharedPtr
     localization_status_pub_;

@@ -280,6 +280,8 @@ LocalizationNode::LocalizationNode()
   fitness_threshold_ = this->declare_parameter<double>("fitness_threshold", 0.2);
   relocalization_timeout_sec_ =
     this->declare_parameter<double>("relocalization_timeout_sec", 1.0);
+  map_to_odom_publish_hz_ =
+    this->declare_parameter<double>("map_to_odom_publish_hz", 20.0);
   tf_lookup_timeout_sec_ = this->declare_parameter<double>("tf_lookup_timeout_sec", 0.05);
   spin_threshold_rad_s_ = this->declare_parameter<double>("spin_threshold_rad_s", 5.0);
   global_map_republish_sec_ = this->declare_parameter<double>("global_map_republish_sec", 5.0);
@@ -301,15 +303,16 @@ LocalizationNode::LocalizationNode()
         std::chrono::duration<double>(global_map_republish_sec_)),
       [this]() { publish_global_map(); });
   }
-
-  // ★ 周期性重发 map→odom TF（50ms = 20Hz），防止 GICP 失败时 TF 链饿死
-  tf_publish_timer_ = this->create_wall_timer(
-    std::chrono::milliseconds(50),
-    [this]() {
-      if (has_map_odom_) {
-        publish_map_to_odom(this->now());
-      }
-    });
+  if (map_to_odom_publish_hz_ > 0.0) {
+    map_to_odom_timer_ = this->create_wall_timer(
+      std::chrono::duration_cast<std::chrono::nanoseconds>(
+        std::chrono::duration<double>(1.0 / map_to_odom_publish_hz_)),
+      [this]() {
+        if (has_map_odom_) {
+          publish_map_to_odom(this->now());
+        }
+      });
+  }
   registration_engine_ = std::make_unique<RegistrationEngine>(
     scan_voxel_size,
     num_neighbors,
@@ -537,7 +540,14 @@ void LocalizationNode::on_registered_cloud(const sensor_msgs::msg::PointCloud2::
 
   try {
     const auto stamp = rclcpp::Time(msg->header.stamp);
-    const auto T_odom_base = lookup_odom_to_base(stamp);
+    Eigen::Isometry3d T_odom_base;
+    bool used_latest_tf = false;
+    try {
+      T_odom_base = lookup_odom_to_base(stamp);
+    } catch (const tf2::TransformException &) {
+      T_odom_base = lookup_odom_to_base_latest();
+      used_latest_tf = true;
+    }
 
     if (is_spinning_) {
       publish_localized_pose(T_map_base_current_, msg->header.stamp);
@@ -574,6 +584,14 @@ void LocalizationNode::on_registered_cloud(const sensor_msgs::msg::PointCloud2::
       source_points_base, initial_guess, *map_manager_);
     last_fitness_score_ = alignment.fitness_score;
     publish_localized_pose(alignment.T_map_base, msg->header.stamp);
+
+    if (used_latest_tf) {
+      RCLCPP_WARN_THROTTLE(
+        this->get_logger(),
+        *this->get_clock(),
+        2000,
+        "Exact odom->base_link TF lookup failed for cloud stamp; fell back to latest TF.");
+    }
 
     if (!alignment.converged) {
       enter_lost(stamp, "small_gicp did not converge");
@@ -698,6 +716,11 @@ Eigen::Isometry3d LocalizationNode::lookup_odom_to_base(const rclcpp::Time & sta
   }
 
   return transform_to_isometry(tf_msg.transform);
+}
+
+Eigen::Isometry3d LocalizationNode::lookup_odom_to_base_latest() const
+{
+  return lookup_odom_to_base(rclcpp::Time(0, 0, this->get_clock()->get_clock_type()));
 }
 
 }  // namespace rm_global_localization
