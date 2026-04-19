@@ -38,7 +38,6 @@ def generate_launch_description():
     autoaim_dir    = get_package_share_directory('rm_autoaim')
     livox_dir      = get_package_share_directory('rm_livox_driver')
     point_lio_dir  = get_package_share_directory('rm_point_lio')
-    global_loc_dir = get_package_share_directory('rm_global_localization')
     bringup_dir    = get_package_share_directory('rm_bringup')
     hw_bridge_params = os.path.join(hw_bridge_dir,  'config', 'params.yaml')
     hik_params       = os.path.join(hik_driver_dir, 'config', 'params.yaml')
@@ -46,8 +45,6 @@ def generate_launch_description():
     autoaim_params   = os.path.join(autoaim_dir,    'config', 'params.yaml')
     livox_launch     = os.path.join(livox_dir,      'launch', 'mid360_bringup.launch.py')
     point_lio_launch = os.path.join(point_lio_dir,  'launch', 'point_lio.launch.py')
-    global_loc_launch = os.path.join(global_loc_dir, 'launch', 'global_localization.launch.py')
-    initial_pose_params = os.path.join(bringup_dir, 'config', 'initial_pose_manager.yaml')
     pure_nav_launch = os.path.join(bringup_dir, 'launch', 'pure_navigation_bringup.launch.py')
 
     # ------------------------------------------------------------------
@@ -93,10 +90,6 @@ def generate_launch_description():
         'navigation_only', default_value='false',
         description='true=仅启动导航链路(Livox + Point-LIO + 可选全局重定位); false=正常按整车模式启动')
 
-    declare_enable_global_localization = DeclareLaunchArgument(
-        'enable_global_localization', default_value='false',
-        description='true=启动 small_gicp 全局重定位节点; false=不启动全局重定位')
-
     declare_use_sim_time = DeclareLaunchArgument(
         'use_sim_time', default_value='false',
         description='Use simulation clock for LiDAR / LIO stack')
@@ -120,13 +113,6 @@ def generate_launch_description():
         'lidar_yaw', default_value='1.5708',
         description='Static TF: livox_frame yaw (rad) in base_link frame — front rotated 90 deg left')
 
-    declare_global_map_path = DeclareLaunchArgument(
-        'global_map_path', default_value='/home/rm/Desktop/SENTRY_FULL/maps/self_filtered_scans.pcd',
-        description='Absolute path to the static PCD map used by rm_global_localization')
-
-    declare_initial_pose_publish_on_startup = DeclareLaunchArgument(
-        'initial_pose_publish_on_startup', default_value='true',
-        description='true=启动导航/定位链后自动发一次 /initialpose; false=只等 game_progress 触发')
     declare_enable_nav2 = DeclareLaunchArgument(
         'enable_nav2', default_value='false',
         description='true=在定位链后继续启动纯 Nav2 框架; false=仅启动定位链')
@@ -141,23 +127,19 @@ def generate_launch_description():
         'nav2_rviz', default_value='true',
         description='true=Nav2 启动时同时打开 RViz 调试界面')
     declare_nav_obstacle_primary_topic = DeclareLaunchArgument(
-        'nav_obstacle_primary_topic', default_value='/livox/lidar/pointcloud',
-        description='Raw lidar PointCloud2 topic for Nav2 local obstacle chain')
+        'nav_obstacle_primary_topic', default_value='/cloud_registered',
+        description='Point-LIO registered cloud topic for Nav2 local obstacle memory')
     declare_nav_obstacle_secondary_topic = DeclareLaunchArgument(
         'nav_obstacle_secondary_topic', default_value='',
         description='Optional second raw lidar PointCloud2 topic for future local obstacle fusion')
     declare_nav_obstacle_output_topic = DeclareLaunchArgument(
-        'nav_obstacle_output_topic', default_value='/nav_obstacle_cloud',
-        description='Filtered obstacle cloud topic for Nav2 local costmap')
-    declare_global_loc_enable_reset_odom_on_recovery = DeclareLaunchArgument(
-        'global_loc_enable_reset_odom_on_recovery', default_value='false',
-        description='Whether rm_global_localization should call /reset_odom after recovery')
+        'nav_obstacle_output_topic', default_value='/nav_obstacle_memory',
+        description='Fading obstacle memory topic for Nav2 local costmap')
 
     use_serial = LaunchConfiguration('use_serial')
     enable_decision = LaunchConfiguration('enable_decision')
     enable_navigation = LaunchConfiguration('enable_navigation')
     navigation_only = LaunchConfiguration('navigation_only')
-    enable_global_localization = LaunchConfiguration('enable_global_localization')
     enable_nav2 = LaunchConfiguration('enable_nav2')
     # hw_bridge 只要 use_serial=true 就启动，不受 navigation_only 限制
     serial_hw_enabled = IfCondition(use_serial)
@@ -170,10 +152,6 @@ def generate_launch_description():
     ]))
     navigation_enabled = IfCondition(PythonExpression([
         "'", enable_navigation, "' == 'true' or '", navigation_only, "' == 'true'"
-    ]))
-    navigation_localization_enabled = IfCondition(PythonExpression([
-        "('", enable_navigation, "' == 'true' or '", navigation_only, "' == 'true') and '",
-        enable_global_localization, "' == 'true'"
     ]))
     navigation_nav2_enabled = IfCondition(PythonExpression([
         "('", enable_navigation, "' == 'true' or '", navigation_only, "' == 'true') and '",
@@ -306,41 +284,38 @@ def generate_launch_description():
         condition=navigation_enabled,
     )
 
-    # ------------------------------------------------------------------
-    # 节点 2f: rm_global_localization — 在 Point-LIO 之后启动
-    # ------------------------------------------------------------------
-    global_localization_delayed = TimerAction(
-        period=3.0,
-        actions=[IncludeLaunchDescription(
-            PythonLaunchDescriptionSource(global_loc_launch),
-            launch_arguments={
-                'map_path': LaunchConfiguration('global_map_path'),
-                'use_sim_time': LaunchConfiguration('use_sim_time'),
-                'enable_reset_odom_on_recovery': LaunchConfiguration('global_loc_enable_reset_odom_on_recovery'),
-            }.items(),
-        )],
-        condition=navigation_localization_enabled,
-    )
-
-    initial_pose_manager_delayed = TimerAction(
-        period=3.5,
+    recovery_manager_delayed = TimerAction(
+        period=2.5,
         actions=[Node(
             package='rm_bringup',
-            executable='initial_pose_manager.py',
-            name='rm_initial_pose_manager',
+            executable='localization_recovery_manager_node',
+            name='localization_recovery_manager',
             output='screen',
-            parameters=[
-                initial_pose_params,
-                {
-                    'publish_on_startup': LaunchConfiguration('initial_pose_publish_on_startup'),
-                },
-            ],
+            parameters=[{
+                'odom_topic': '/aft_mapped_to_init',
+                'initialpose_topic': '/initialpose',
+                'reset_odom_service': '/reset_odom',
+                'map_frame': 'map',
+                'odom_frame': 'odom',
+                'base_frame': 'base_link',
+                'status_topic': '/localization_recovery_status',
+                'map_to_odom_publish_hz': 20.0,
+                'odom_timeout_sec': 0.50,
+                'spin_threshold_rad_s': 5.0,
+                'pose_jump_distance_m': 0.80,
+                'pose_jump_angle_rad': 1.20,
+                'recover_settle_sec': 1.00,
+                'last_good_update_period_sec': 0.20,
+                'max_good_linear_speed_mps': 1.00,
+                'max_good_angular_speed_rad_s': 1.00,
+                'use_sim_time': LaunchConfiguration('use_sim_time'),
+            }],
         )],
-        condition=navigation_localization_enabled,
+        condition=navigation_enabled,
     )
 
     nav2_bringup_delayed = TimerAction(
-        period=4.5,
+        period=4.0,
         actions=[IncludeLaunchDescription(
             PythonLaunchDescriptionSource(pure_nav_launch),
             launch_arguments={
@@ -462,7 +437,6 @@ def generate_launch_description():
         declare_enable_decision,
         declare_enable_navigation,
         declare_navigation_only,
-        declare_enable_global_localization,
         declare_use_sim_time,
         declare_lidar_x,
         declare_lidar_y,
@@ -470,8 +444,6 @@ def generate_launch_description():
         declare_lidar_roll,
         declare_lidar_pitch,
         declare_lidar_yaw,
-        declare_global_map_path,
-        declare_initial_pose_publish_on_startup,
         declare_enable_nav2,
         declare_nav2_map_yaml,
         declare_nav2_params_file,
@@ -479,7 +451,6 @@ def generate_launch_description():
         declare_nav_obstacle_primary_topic,
         declare_nav_obstacle_secondary_topic,
         declare_nav_obstacle_output_topic,
-        declare_global_loc_enable_reset_odom_on_recovery,
         # 节点
         hw_bridge_node,
         hik_camera_delayed,
@@ -488,8 +459,7 @@ def generate_launch_description():
         livox_driver_launch,
         self_point_filter_node,
         point_lio_delayed,
-        global_localization_delayed,
-        initial_pose_manager_delayed,
+        recovery_manager_delayed,
         nav2_bringup_delayed,
         vision_delayed,
         vision_quick,

@@ -1,11 +1,11 @@
 #include <array>
 #include <cmath>
 #include <cstdint>
-#include <functional>
 #include <limits>
 #include <memory>
 #include <mutex>
 #include <string>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -13,16 +13,14 @@
 
 #include <pcl/common/transforms.h>
 #include <pcl/filters/filter.h>
-#include <pcl/filters/approximate_voxel_grid.h>
 #include <pcl/point_cloud.h>
 #include <pcl/point_types.h>
 #include <pcl_conversions/pcl_conversions.h>
 
-#include <rclcpp/rclcpp.hpp>
 #include <geometry_msgs/msg/transform_stamped.hpp>
+#include <rclcpp/rclcpp.hpp>
 #include <sensor_msgs/msg/point_cloud2.hpp>
 #include <tf2/exceptions.h>
-#include <tf2/time.h>
 #include <tf2_ros/buffer.h>
 #include <tf2_ros/transform_listener.h>
 
@@ -47,11 +45,12 @@ struct ExclusionBox
   }
 };
 
-struct InputState
+struct MemoryCell
 {
-  Cloud::Ptr cloud{std::make_shared<Cloud>()};
-  rclcpp::Time stamp{0, 0, RCL_ROS_TIME};
-  bool has_data{false};
+  float x{0.0F};
+  float y{0.0F};
+  float z{0.0F};
+  rclcpp::Time last_seen{0, 0, RCL_ROS_TIME};
 };
 
 Eigen::Vector3f toVector3(const std::vector<double> & values, const std::string & name)
@@ -86,6 +85,12 @@ Eigen::Affine3f transformToEigen(const geometry_msgs::msg::TransformStamped & tr
   return affine;
 }
 
+std::int64_t cellKey(std::int32_t ix, std::int32_t iy)
+{
+  return (static_cast<std::int64_t>(ix) << 32) ^
+         static_cast<std::uint32_t>(iy);
+}
+
 }  // namespace
 
 class ObstacleCloudFilterNode : public rclcpp::Node
@@ -97,22 +102,23 @@ public:
     tf_listener_(tf_buffer_)
   {
     primary_input_topic_ = this->declare_parameter<std::string>(
-      "primary_input_topic", "/livox/lidar/pointcloud");
+      "primary_input_topic", "/cloud_registered");
     secondary_input_topic_ = this->declare_parameter<std::string>(
       "secondary_input_topic", "");
     output_topic_ = this->declare_parameter<std::string>(
-      "output_topic", "/nav_obstacle_cloud");
+      "output_topic", "/nav_obstacle_memory");
     target_frame_ = this->declare_parameter<std::string>(
-      "target_frame", "base_link");
+      "target_frame", "odom");
+    base_frame_ = this->declare_parameter<std::string>(
+      "base_frame", "base_link");
     min_height_ = static_cast<float>(this->declare_parameter<double>("min_height", 0.05));
     max_height_ = static_cast<float>(this->declare_parameter<double>("max_height", 1.50));
     min_range_ = static_cast<float>(this->declare_parameter<double>("min_range", 0.20));
     max_range_ = static_cast<float>(this->declare_parameter<double>("max_range", 5.00));
-    voxel_leaf_size_ = static_cast<float>(this->declare_parameter<double>("voxel_leaf_size", 0.10));
-    merge_timeout_sec_ = this->declare_parameter<double>("merge_timeout_sec", 0.20);
+    memory_resolution_ = static_cast<float>(this->declare_parameter<double>("memory_resolution", 0.10));
+    fading_timeout_sec_ = this->declare_parameter<double>("fading_timeout_sec", 1.20);
     transform_timeout_sec_ = this->declare_parameter<double>("transform_timeout_sec", 0.05);
 
-    // ---- Exclusion boxes (基于 50x50x55cm 车体 + 小云台 + 单雷达偏装 y=+0.2m) ----
     body_box_.name = "body_exclusion_box";
     body_box_.enabled = this->declare_parameter<bool>("body_box.enabled", true);
     body_box_.min = toVector3(
@@ -157,81 +163,61 @@ public:
         "lidar_arm_box.max", {0.10, 0.35, 0.50}),
       "lidar_arm_box.max");
 
-    if (min_height_ >= max_height_) {
-      throw std::runtime_error("min_height must be smaller than max_height");
-    }
-    if (min_range_ < 0.0F || min_range_ >= max_range_) {
-      throw std::runtime_error("min_range must be non-negative and smaller than max_range");
-    }
-
     publisher_ = this->create_publisher<sensor_msgs::msg::PointCloud2>(
       output_topic_,
-      rclcpp::QoS(rclcpp::KeepLast(20)).reliable());
+      rclcpp::QoS(rclcpp::KeepLast(10)).reliable());
 
     primary_sub_ = this->create_subscription<sensor_msgs::msg::PointCloud2>(
       primary_input_topic_,
       rclcpp::SensorDataQoS(),
-      std::bind(&ObstacleCloudFilterNode::handlePrimaryCloud, this, std::placeholders::_1));
+      std::bind(&ObstacleCloudFilterNode::handleCloud, this, std::placeholders::_1));
 
     if (!secondary_input_topic_.empty()) {
       secondary_sub_ = this->create_subscription<sensor_msgs::msg::PointCloud2>(
         secondary_input_topic_,
         rclcpp::SensorDataQoS(),
-        std::bind(&ObstacleCloudFilterNode::handleSecondaryCloud, this, std::placeholders::_1));
+        std::bind(&ObstacleCloudFilterNode::handleCloud, this, std::placeholders::_1));
     }
 
     RCLCPP_INFO(
       get_logger(),
-      "Obstacle cloud filter ready: %s -> %s (frame=%s, secondary=%s)",
+      "Obstacle memory ready: primary=%s secondary=%s output=%s memory_frame=%s",
       primary_input_topic_.c_str(),
+      secondary_input_topic_.empty() ? "disabled" : secondary_input_topic_.c_str(),
       output_topic_.c_str(),
-      target_frame_.c_str(),
-      secondary_input_topic_.empty() ? "disabled" : secondary_input_topic_.c_str());
-    RCLCPP_INFO(
-      get_logger(),
-      "Filter window: height=[%.2f, %.2f] range=[%.2f, %.2f] voxel=%.2f",
-      min_height_, max_height_, min_range_, max_range_, voxel_leaf_size_);
+      target_frame_.c_str());
   }
 
 private:
-  void handlePrimaryCloud(const sensor_msgs::msg::PointCloud2::ConstSharedPtr msg)
+  void handleCloud(const sensor_msgs::msg::PointCloud2::ConstSharedPtr msg)
   {
-    processInput(0U, msg);
-  }
+    if (msg->header.frame_id.empty()) {
+      RCLCPP_WARN_THROTTLE(
+        get_logger(), *get_clock(), 2000,
+        "Received cloud without frame_id, dropping");
+      return;
+    }
+    if (msg->header.stamp.sec == 0 && msg->header.stamp.nanosec == 0) {
+      RCLCPP_WARN_THROTTLE(
+        get_logger(), *get_clock(), 2000,
+        "Received cloud without valid stamp, dropping");
+      return;
+    }
 
-  void handleSecondaryCloud(const sensor_msgs::msg::PointCloud2::ConstSharedPtr msg)
-  {
-    processInput(1U, msg);
-  }
-
-  void processInput(
-    std::size_t index,
-    const sensor_msgs::msg::PointCloud2::ConstSharedPtr & msg)
-  {
-    auto filtered_cloud = filterCloud(*msg);
+    const rclcpp::Time stamp(msg->header.stamp);
+    auto filtered_cloud = filterCloud(*msg, stamp);
     if (!filtered_cloud) {
       return;
     }
 
-    const rclcpp::Time stamp = msg->header.stamp.sec == 0 && msg->header.stamp.nanosec == 0
-      ? this->now()
-      : rclcpp::Time(msg->header.stamp);
-
-    {
-      std::lock_guard<std::mutex> lock(state_mutex_);
-      input_states_.at(index).cloud = filtered_cloud;
-      input_states_.at(index).stamp = stamp;
-      input_states_.at(index).has_data = true;
-    }
-
-    publishMergedCloud(stamp);
+    updateMemory(*filtered_cloud, stamp);
+    publishMemory(stamp);
   }
 
-  Cloud::Ptr filterCloud(const sensor_msgs::msg::PointCloud2 & msg)
+  Cloud::Ptr filterCloud(const sensor_msgs::msg::PointCloud2 & msg, const rclcpp::Time & stamp)
   {
     auto input_cloud = std::make_shared<Cloud>();
     pcl::fromROSMsg(msg, *input_cloud);
-
     if (input_cloud->empty()) {
       return std::make_shared<Cloud>();
     }
@@ -239,18 +225,17 @@ private:
     std::vector<int> finite_indices;
     pcl::removeNaNFromPointCloud(*input_cloud, *input_cloud, finite_indices);
 
-    auto transformed_cloud = std::make_shared<Cloud>();
-    if (!transformToTargetFrame(*input_cloud, msg.header.frame_id, transformed_cloud)) {
+    auto cloud_in_base = std::make_shared<Cloud>();
+    if (!transformCloudExact(*input_cloud, msg.header.frame_id, base_frame_, stamp, *cloud_in_base)) {
       return nullptr;
     }
 
-    auto filtered_cloud = std::make_shared<Cloud>();
-    filtered_cloud->points.reserve(transformed_cloud->points.size());
-
+    Cloud filtered_in_base;
+    filtered_in_base.points.reserve(cloud_in_base->points.size());
     const float min_range_sq = min_range_ * min_range_;
     const float max_range_sq = max_range_ * max_range_;
 
-    for (const auto & point : transformed_cloud->points) {
+    for (const auto & point : cloud_in_base->points) {
       if (!pcl::isFinite(point)) {
         continue;
       }
@@ -259,105 +244,114 @@ private:
       if (planar_range_sq < min_range_sq || planar_range_sq > max_range_sq) {
         continue;
       }
-
       if (point.z < min_height_ || point.z > max_height_) {
         continue;
       }
-
       if (body_box_.contains(point) || gimbal_box_.contains(point) ||
-          gimbal_support_box_.contains(point) || lidar_arm_box_.contains(point)) {
+          gimbal_support_box_.contains(point) || lidar_arm_box_.contains(point))
+      {
         continue;
       }
-
-      filtered_cloud->points.push_back(point);
+      filtered_in_base.points.push_back(point);
     }
 
-    filtered_cloud->width = static_cast<std::uint32_t>(filtered_cloud->points.size());
-    filtered_cloud->height = 1;
-    filtered_cloud->is_dense = true;
-    return filtered_cloud;
+    filtered_in_base.width = static_cast<std::uint32_t>(filtered_in_base.points.size());
+    filtered_in_base.height = 1;
+    filtered_in_base.is_dense = true;
+
+    auto filtered_in_target = std::make_shared<Cloud>();
+    if (!transformCloudExact(filtered_in_base, base_frame_, target_frame_, stamp, *filtered_in_target)) {
+      return nullptr;
+    }
+    return filtered_in_target;
   }
 
-  bool transformToTargetFrame(
+  bool transformCloudExact(
     const Cloud & input_cloud,
-    const std::string & input_frame,
-    Cloud::Ptr & transformed_cloud)
+    const std::string & source_frame,
+    const std::string & target_frame,
+    const rclcpp::Time & stamp,
+    Cloud & output_cloud)
   {
-    if (input_frame.empty()) {
-      RCLCPP_WARN_THROTTLE(
-        get_logger(), *get_clock(), 2000,
-        "Received point cloud without frame_id, dropping message");
-      return false;
-    }
-
-    if (input_frame == target_frame_) {
-      *transformed_cloud = input_cloud;
+    if (source_frame == target_frame) {
+      output_cloud = input_cloud;
       return true;
     }
 
     try {
       const auto transform = tf_buffer_.lookupTransform(
-        target_frame_,
-        input_frame,
-        tf2::TimePointZero,
-        tf2::durationFromSec(transform_timeout_sec_));
-      pcl::transformPointCloud(input_cloud, *transformed_cloud, transformToEigen(transform));
+        target_frame,
+        source_frame,
+        stamp,
+        rclcpp::Duration::from_seconds(transform_timeout_sec_));
+      pcl::transformPointCloud(input_cloud, output_cloud, transformToEigen(transform));
       return true;
     } catch (const tf2::TransformException & ex) {
       RCLCPP_WARN_THROTTLE(
         get_logger(), *get_clock(), 2000,
-        "Failed to transform cloud %s -> %s: %s",
-        input_frame.c_str(), target_frame_.c_str(), ex.what());
+        "Failed to transform cloud %s -> %s at stamp %.6f: %s",
+        source_frame.c_str(), target_frame.c_str(), stamp.seconds(), ex.what());
       return false;
     }
   }
 
-  Cloud::Ptr downsampleCloud(const Cloud::Ptr & cloud) const
+  void updateMemory(const Cloud & cloud, const rclcpp::Time & stamp)
   {
-    if (!cloud || cloud->empty() || voxel_leaf_size_ <= std::numeric_limits<float>::epsilon()) {
-      return cloud ? cloud : std::make_shared<Cloud>();
+    std::lock_guard<std::mutex> lock(memory_mutex_);
+    pruneExpiredCellsLocked(stamp);
+
+    for (const auto & point : cloud.points) {
+      const auto ix = static_cast<std::int32_t>(std::floor(point.x / memory_resolution_));
+      const auto iy = static_cast<std::int32_t>(std::floor(point.y / memory_resolution_));
+      const auto key = cellKey(ix, iy);
+
+      auto & cell = memory_[key];
+      cell.x = (static_cast<float>(ix) + 0.5F) * memory_resolution_;
+      cell.y = (static_cast<float>(iy) + 0.5F) * memory_resolution_;
+      cell.z = point.z;
+      cell.last_seen = stamp;
     }
-
-    pcl::ApproximateVoxelGrid<pcl::PointXYZ> voxel_filter;
-    voxel_filter.setLeafSize(voxel_leaf_size_, voxel_leaf_size_, voxel_leaf_size_);
-    voxel_filter.setInputCloud(cloud);
-
-    auto downsampled_cloud = std::make_shared<Cloud>();
-    voxel_filter.filter(*downsampled_cloud);
-    return downsampled_cloud;
   }
 
-  void publishMergedCloud(const rclcpp::Time & reference_stamp)
+  void pruneExpiredCellsLocked(const rclcpp::Time & stamp)
   {
-    auto merged_cloud = std::make_shared<Cloud>();
-    merged_cloud->height = 1;
-    merged_cloud->is_dense = true;
+    if (fading_timeout_sec_ <= 0.0) {
+      return;
+    }
+
+    for (auto it = memory_.begin(); it != memory_.end();) {
+      if ((stamp - it->second.last_seen).seconds() > fading_timeout_sec_) {
+        it = memory_.erase(it);
+      } else {
+        ++it;
+      }
+    }
+  }
+
+  void publishMemory(const rclcpp::Time & stamp)
+  {
+    auto output_cloud = std::make_shared<Cloud>();
+    output_cloud->height = 1;
+    output_cloud->is_dense = true;
 
     {
-      std::lock_guard<std::mutex> lock(state_mutex_);
-
-      if (input_states_[0].has_data) {
-        *merged_cloud += *input_states_[0].cloud;
-      }
-
-      if (!secondary_input_topic_.empty() && input_states_[1].has_data) {
-        const double dt = std::abs((reference_stamp - input_states_[1].stamp).seconds());
-        if (dt <= merge_timeout_sec_) {
-          *merged_cloud += *input_states_[1].cloud;
-        }
+      std::lock_guard<std::mutex> lock(memory_mutex_);
+      output_cloud->points.reserve(memory_.size());
+      for (const auto & item : memory_) {
+        pcl::PointXYZ point;
+        point.x = item.second.x;
+        point.y = item.second.y;
+        point.z = item.second.z;
+        output_cloud->points.push_back(point);
       }
     }
 
-    merged_cloud->width = static_cast<std::uint32_t>(merged_cloud->points.size());
-
-    auto output_cloud = downsampleCloud(merged_cloud);
+    output_cloud->width = static_cast<std::uint32_t>(output_cloud->points.size());
 
     sensor_msgs::msg::PointCloud2 output_msg;
     pcl::toROSMsg(*output_cloud, output_msg);
-    (void)reference_stamp;
-    output_msg.header.stamp.sec = 0;
-    output_msg.header.stamp.nanosec = 0;
     output_msg.header.frame_id = target_frame_;
+    output_msg.header.stamp = stamp;
     publisher_->publish(output_msg);
   }
 
@@ -365,13 +359,14 @@ private:
   std::string secondary_input_topic_;
   std::string output_topic_;
   std::string target_frame_;
+  std::string base_frame_;
 
   float min_height_{0.05F};
   float max_height_{1.50F};
   float min_range_{0.20F};
   float max_range_{5.00F};
-  float voxel_leaf_size_{0.10F};
-  double merge_timeout_sec_{0.20};
+  float memory_resolution_{0.10F};
+  double fading_timeout_sec_{1.20};
   double transform_timeout_sec_{0.05};
 
   ExclusionBox body_box_;
@@ -379,8 +374,8 @@ private:
   ExclusionBox gimbal_support_box_;
   ExclusionBox lidar_arm_box_;
 
-  std::array<InputState, 2> input_states_;
-  std::mutex state_mutex_;
+  std::unordered_map<std::int64_t, MemoryCell> memory_;
+  std::mutex memory_mutex_;
 
   rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr publisher_;
   rclcpp::Subscription<sensor_msgs::msg::PointCloud2>::SharedPtr primary_sub_;

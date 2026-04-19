@@ -6,11 +6,11 @@ rm_initial_pose_manager:
 
     # 平时测试: 启动导航/定位链后自动发一次初始位姿
     # 比赛时: 仍会在收到 game_progress=3 时再次按 robot_id 重发一轮
-    publish_on_startup: true
+    publish_on_startup: false
     startup_delay_sec: 3.0
 
     # 裁判系统阶段触发
-    publish_on_game_progress: true
+    publish_on_game_progress: false
     game_progress_trigger: 3
 
     # 连发几帧, 提高 /initialpose 在 bringup 阶段被接收到的概率

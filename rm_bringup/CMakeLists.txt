@@ -9,8 +9,12 @@ find_package(ament_cmake REQUIRED)
 find_package(Eigen3 REQUIRED)
 find_package(PCL REQUIRED COMPONENTS common filters)
 find_package(pcl_conversions REQUIRED)
+find_package(geometry_msgs REQUIRED)
+find_package(nav_msgs REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(sensor_msgs REQUIRED)
+find_package(std_msgs REQUIRED)
+find_package(std_srvs REQUIRED)
 find_package(tf2_ros REQUIRED)
 find_package(livox_ros_driver2 REQUIRED)
 
@@ -55,7 +59,26 @@ ament_target_dependencies(self_point_filter_node
   tf2_ros
 )
 
-install(TARGETS obstacle_cloud_filter_node self_point_filter_node
+add_executable(localization_recovery_manager_node
+  src/localization_recovery_manager_node.cpp
+)
+
+target_compile_features(localization_recovery_manager_node PUBLIC cxx_std_17)
+
+target_link_libraries(localization_recovery_manager_node
+  Eigen3::Eigen
+)
+
+ament_target_dependencies(localization_recovery_manager_node
+  geometry_msgs
+  nav_msgs
+  rclcpp
+  std_msgs
+  std_srvs
+  tf2_ros
+)
+
+install(TARGETS obstacle_cloud_filter_node self_point_filter_node localization_recovery_manager_node
   DESTINATION lib/${PROJECT_NAME}
 )
 
@@ -79,7 +102,6 @@ install(PROGRAMS
   scripts/cmd_vel_to_nav_cmd.py
   scripts/initial_pose_manager.py
   scripts/pcd2pgm.py
-  scripts/fake_lidar_publisher.py
   DESTINATION lib/${PROJECT_NAME}
 )
 

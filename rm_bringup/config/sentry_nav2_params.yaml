@@ -5,8 +5,8 @@
 #   1. 删除 plugin_lib_names — 让 bt_navigator 加载默认插件（之前裁剪导致 inactive）
 #   2. global_costmap 只保留 static_layer + inflation_layer
 #   3. local_costmap = static_layer + obstacle_layer + inflation_layer
-#   4. local obstacle layer 单雷达阶段只 marking, 不 clearing
-#   5. Controller = 单雷达安全模式 DWB（禁用 vy, 保守旋转）
+#   4. local obstacle layer 吃 fading local obstacle memory
+#   5. Controller = 真全向 DWB（恢复 vy）
 # =============================================================================
 
 bt_navigator:
@@ -121,12 +121,12 @@ local_costmap:
         enabled: true
         footprint_clearing_enabled: true
         observation_sources: obstacle_cloud
-        obstacle_cloud:
-          # raw lidar -> C++ 过滤节点 -> /nav_obstacle_cloud
-          topic: /nav_obstacle_cloud
+      obstacle_cloud:
+          # Point-LIO /cloud_registered -> fading obstacle memory -> /nav_obstacle_memory
+          topic: /nav_obstacle_memory
           data_type: "PointCloud2"
           marking: true
-          clearing: true
+          clearing: false
           observation_persistence: 0.0
           min_obstacle_height: 0.08
           max_obstacle_height: 1.20

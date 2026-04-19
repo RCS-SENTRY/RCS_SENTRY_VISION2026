@@ -51,7 +51,7 @@ def _build_nodes(context, *args, **kwargs):
         "bt_navigator",
     ]
 
-    # --- 障碍点云过滤节点 ---
+    # --- fading 本地障碍记忆节点 ---
     obstacle_filter = Node(
         package="rm_bringup",
         executable="obstacle_cloud_filter_node",
@@ -61,13 +61,14 @@ def _build_nodes(context, *args, **kwargs):
             "primary_input_topic": obstacle_primary_topic,
             "secondary_input_topic": obstacle_secondary_topic,
             "output_topic": obstacle_output_topic,
-            "target_frame": "base_link",
+            "target_frame": "odom",
+            "base_frame": "base_link",
             "min_height": 0.05,
             "max_height": 1.50,
             "min_range": 0.20,
             "max_range": 5.00,
-            "voxel_leaf_size": 0.10,
-            "merge_timeout_sec": 0.20,
+            "memory_resolution": 0.10,
+            "fading_timeout_sec": 1.20,
             "transform_timeout_sec": 0.05,
             "body_box.enabled": True,
             "body_box.min": [-0.30, -0.30, -0.10],
@@ -160,6 +161,7 @@ def _build_nodes(context, *args, **kwargs):
             {"output_topic": "/nav_cmd"},
             {"cmd_vel_timeout_sec": 0.25},
             {"publish_rate_hz": 20.0},
+            {"recovery_status_topic": "/localization_recovery_status"},
             {"use_sim_time": use_sim_time},
         ],
         arguments=["--ros-args", "--log-level", log_level],
@@ -219,8 +221,8 @@ def generate_launch_description():
         ),
         DeclareLaunchArgument(
             "obstacle_primary_topic",
-            default_value="/livox/lidar/pointcloud",
-            description="Raw lidar PointCloud2 topic used by local obstacle filtering",
+            default_value="/cloud_registered",
+            description="Point-LIO registered cloud topic used by local obstacle memory",
         ),
         DeclareLaunchArgument(
             "obstacle_secondary_topic",
@@ -229,8 +231,8 @@ def generate_launch_description():
         ),
         DeclareLaunchArgument(
             "obstacle_output_topic",
-            default_value="/nav_obstacle_cloud",
-            description="Filtered obstacle cloud topic consumed by Nav2 local costmap",
+            default_value="/nav_obstacle_memory",
+            description="Fading obstacle memory topic consumed by Nav2 local costmap",
         ),
 
         OpaqueFunction(function=_build_nodes),
