@@ -41,12 +41,16 @@ def _build_nodes(context, *args, **kwargs):
     obstacle_primary_topic = LaunchConfiguration("obstacle_primary_topic")
     obstacle_secondary_topic = LaunchConfiguration("obstacle_secondary_topic")
     obstacle_output_topic = LaunchConfiguration("obstacle_output_topic")
+    bringup_dir = get_package_share_directory("rm_bringup")
+    bt_xml = os.path.join(bringup_dir, "config", "navigate_to_pose_no_spin.xml")
+    bt_through_xml = os.path.join(bringup_dir, "config", "navigate_through_poses_no_spin.xml")
 
     remappings = [("/tf", "tf"), ("/tf_static", "tf_static")]
     lifecycle_nodes = [
         "map_server",
         "planner_server",
         "controller_server",
+        "velocity_smoother",
         "behavior_server",
         "bt_navigator",
     ]
@@ -66,22 +70,23 @@ def _build_nodes(context, *args, **kwargs):
             "min_height": 0.05,
             "max_height": 1.50,
             "min_range": 0.20,
-            "max_range": 5.00,
-            "memory_resolution": 0.10,
-            "fading_timeout_sec": 1.20,
+            "max_range": 5.50,
+            "memory_resolution": 0.06,
+            "fading_timeout_sec": 1.80,
             "transform_timeout_sec": 0.05,
+            "debug_log_period_sec": 2.0,
             "body_box.enabled": True,
-            "body_box.min": [-0.30, -0.30, -0.10],
-            "body_box.max": [0.30, 0.30, 0.60],
+            "body_box.min": [-0.27, -0.27, -0.05],
+            "body_box.max": [0.27, 0.27, 0.60],
             "gimbal_box.enabled": True,
-            "gimbal_box.min": [-0.15, -0.15, 0.40],
-            "gimbal_box.max": [0.15, 0.15, 0.80],
+            "gimbal_box.min": [-0.16, -0.16, 0.42],
+            "gimbal_box.max": [0.16, 0.16, 0.80],
             "gimbal_support_box.enabled": True,
-            "gimbal_support_box.min": [-0.08, -0.08, 0.25],
-            "gimbal_support_box.max": [0.08, 0.08, 0.45],
+            "gimbal_support_box.min": [-0.10, -0.10, 0.20],
+            "gimbal_support_box.max": [0.10, 0.10, 0.48],
             "lidar_arm_box.enabled": True,
-            "lidar_arm_box.min": [-0.05, 0.10, 0.20],
-            "lidar_arm_box.max": [0.10, 0.35, 0.50],
+            "lidar_arm_box.min": [-0.08, 0.10, 0.18],
+            "lidar_arm_box.max": [0.12, 0.35, 0.52],
             "use_sim_time": use_sim_time,
         }],
         arguments=["--ros-args", "--log-level", log_level],
@@ -114,7 +119,17 @@ def _build_nodes(context, *args, **kwargs):
         output="screen",
         parameters=[params_file, {"use_sim_time": use_sim_time}],
         arguments=["--ros-args", "--log-level", log_level],
-        remappings=remappings,
+        remappings=remappings + [("cmd_vel", "/cmd_vel_raw")],
+    )
+
+    velocity_smoother = Node(
+        package="nav2_velocity_smoother",
+        executable="velocity_smoother",
+        name="velocity_smoother",
+        output="screen",
+        parameters=[params_file, {"use_sim_time": use_sim_time}],
+        arguments=["--ros-args", "--log-level", log_level],
+        remappings=remappings + [("cmd_vel", "/cmd_vel_raw"), ("cmd_vel_smoothed", "/cmd_vel")],
     )
 
     behavior_server = Node(
@@ -132,7 +147,14 @@ def _build_nodes(context, *args, **kwargs):
         executable="bt_navigator",
         name="bt_navigator",
         output="screen",
-        parameters=[params_file, {"use_sim_time": use_sim_time}],
+        parameters=[
+            params_file,
+            {
+                "use_sim_time": use_sim_time,
+                "default_nav_to_pose_bt_xml": bt_xml,
+                "default_nav_through_poses_bt_xml": bt_through_xml,
+            },
+        ],
         arguments=["--ros-args", "--log-level", log_level],
         remappings=remappings,
     )
@@ -162,13 +184,14 @@ def _build_nodes(context, *args, **kwargs):
             {"cmd_vel_timeout_sec": 0.25},
             {"publish_rate_hz": 20.0},
             {"recovery_status_topic": "/localization_recovery_status"},
+            {"force_zero_angular_z": True},
+            {"invert_linear_y": False},
             {"use_sim_time": use_sim_time},
         ],
         arguments=["--ros-args", "--log-level", log_level],
     )
 
     # RViz 调试节点
-    bringup_dir = get_package_share_directory("rm_bringup")
     rviz_config = os.path.join(bringup_dir, "rviz", "nav2_debug.rviz")
     rviz_node = Node(
         package="rviz2",
@@ -185,6 +208,7 @@ def _build_nodes(context, *args, **kwargs):
         map_server,
         planner_server,
         controller_server,
+        velocity_smoother,
         behavior_server,
         bt_navigator,
         lifecycle_manager,

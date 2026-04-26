@@ -27,6 +27,8 @@ int lidar_type, pcd_save_interval;
 std::vector<double> gravity_init, gravity;
 std::vector<double> extrinT;
 std::vector<double> extrinR;
+std::vector<double> base_to_lidar_translation;
+std::vector<double> base_to_lidar_rpy;
 bool runtime_pos_log, pcd_save_en, path_en, extrinsic_est_en = true;
 bool scan_pub_en, scan_body_pub_en;
 shared_ptr<Preprocess> p_pre;
@@ -86,6 +88,10 @@ void readParameters(shared_ptr<rclcpp::Node> &nh) {
     nh->declare_parameter<std::vector<double>>("mapping.gravity_init", {0, 0, -9.810});
     nh->declare_parameter<std::vector<double>>("mapping.extrinsic_T", {0, 0, 0});
     nh->declare_parameter<std::vector<double>>("mapping.extrinsic_R", {1, 0, 0, 0, 1, 0, 0, 0, 1});
+    nh->declare_parameter<std::vector<double>>(
+      "base_to_lidar.translation", {0.0, 0.2, 0.35});
+    nh->declare_parameter<std::vector<double>>(
+      "base_to_lidar.rpy", {0.0, 0.3115, 1.5708});
     nh->declare_parameter<bool>("odometry.publish_odometry_without_downsample", false);
     nh->declare_parameter<bool>("publish.path_en", true);
     nh->declare_parameter<bool>("publish.scan_publish_en", true);
@@ -146,6 +152,8 @@ void readParameters(shared_ptr<rclcpp::Node> &nh) {
     nh->get_parameter("mapping.gravity_init", gravity_init);
     nh->get_parameter("mapping.extrinsic_T", extrinT);
     nh->get_parameter("mapping.extrinsic_R", extrinR);
+    nh->get_parameter("base_to_lidar.translation", base_to_lidar_translation);
+    nh->get_parameter("base_to_lidar.rpy", base_to_lidar_rpy);
     nh->get_parameter("odometry.publish_odometry_without_downsample", publish_odometry_without_downsample);
     nh->get_parameter("publish.path_en", path_en);
     nh->get_parameter("publish.scan_publish_en", scan_pub_en);
@@ -154,4 +162,3 @@ void readParameters(shared_ptr<rclcpp::Node> &nh) {
     nh->get_parameter("pcd_save.pcd_save_en", pcd_save_en);
     nh->get_parameter("pcd_save.interval", pcd_save_interval);
 }
-

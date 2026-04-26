@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 
+import math
+
 import rclpy
 from action_msgs.msg import GoalStatus, GoalStatusArray
 from geometry_msgs.msg import Twist
@@ -8,31 +10,33 @@ from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
 from rclpy.qos import QoSPresetProfiles
 from rm_interfaces.msg import NavCmd
-from std_msgs.msg import String
 
 
-class CmdVelToNavCmd(Node):
+class PbCmdVelToNavCmd(Node):
     def __init__(self) -> None:
-        super().__init__("cmd_vel_to_nav_cmd")
+        super().__init__("pb_cmd_vel_to_nav_cmd")
 
         self.declare_parameter("input_topic", "/cmd_vel")
         self.declare_parameter("output_topic", "/nav_cmd")
         self.declare_parameter("cmd_vel_timeout_sec", 0.25)
         self.declare_parameter("publish_rate_hz", 20.0)
+        self.declare_parameter("navigate_to_pose_status_topic", "/navigate_to_pose/_action/status")
         self.declare_parameter(
-            "navigate_status_topic", "/navigate_to_pose/_action/status"
+            "navigate_through_poses_status_topic",
+            "/navigate_through_poses/_action/status",
         )
         self.declare_parameter("goal_reached_latch_sec", 1.0)
-        self.declare_parameter(
-            "recovery_status_topic", "/localization_recovery_status"
-        )
         self.declare_parameter("force_zero_angular_z", True)
         self.declare_parameter("invert_linear_y", False)
 
         input_topic = str(self.get_parameter("input_topic").value)
         output_topic = str(self.get_parameter("output_topic").value)
-        navigate_status_topic = str(self.get_parameter("navigate_status_topic").value)
-        recovery_status_topic = str(self.get_parameter("recovery_status_topic").value)
+        navigate_to_pose_status_topic = str(
+            self.get_parameter("navigate_to_pose_status_topic").value
+        )
+        navigate_through_poses_status_topic = str(
+            self.get_parameter("navigate_through_poses_status_topic").value
+        )
         self.cmd_vel_timeout_sec = float(self.get_parameter("cmd_vel_timeout_sec").value)
         publish_rate_hz = float(self.get_parameter("publish_rate_hz").value)
         self.goal_reached_latch_sec = float(
@@ -41,10 +45,9 @@ class CmdVelToNavCmd(Node):
         self.force_zero_angular_z = bool(
             self.get_parameter("force_zero_angular_z").value
         )
-        self.invert_linear_y = bool(
-            self.get_parameter("invert_linear_y").value
-        )
-        if publish_rate_hz <= 1e-6:
+        self.invert_linear_y = bool(self.get_parameter("invert_linear_y").value)
+
+        if publish_rate_hz <= 1e-6 or not math.isfinite(publish_rate_hz):
             publish_rate_hz = 20.0
         if self.goal_reached_latch_sec < 0.0:
             self.goal_reached_latch_sec = 0.0
@@ -52,19 +55,17 @@ class CmdVelToNavCmd(Node):
         self.nav_cmd_pub = self.create_publisher(
             NavCmd, output_topic, QoSPresetProfiles.SENSOR_DATA.value
         )
-        self.cmd_vel_sub = self.create_subscription(
-            Twist, input_topic, self.on_cmd_vel, 10
-        )
-        self.goal_status_sub = self.create_subscription(
+        self.cmd_vel_sub = self.create_subscription(Twist, input_topic, self.on_cmd_vel, 10)
+        self.nav_to_pose_status_sub = self.create_subscription(
             GoalStatusArray,
-            navigate_status_topic,
+            navigate_to_pose_status_topic,
             self.on_goal_status,
             10,
         )
-        self.recovery_status_sub = self.create_subscription(
-            String,
-            recovery_status_topic,
-            self.on_recovery_status,
+        self.nav_through_poses_status_sub = self.create_subscription(
+            GoalStatusArray,
+            navigate_through_poses_status_topic,
+            self.on_goal_status,
             10,
         )
         self.timer = self.create_timer(1.0 / publish_rate_hz, self.on_timer)
@@ -72,19 +73,16 @@ class CmdVelToNavCmd(Node):
         self.latest_cmd = Twist()
         self.latest_cmd_time = self.get_clock().now()
         self.goal_reached_until = None
-        self.recovery_state = "WAITING_FOR_INITIALPOSE"
         self.has_cmd = False
         self.timeout_reported = False
 
         self.get_logger().info(
-            "cmd_vel_to_nav_cmd ready: %s -> %s, timeout=%.2fs, status=%s, recovery=%s, invert_linear_y=%s"
+            "PB cmd_vel bridge ready: %s -> %s, timeout=%.2fs, force_zero_angular_z=%s"
             % (
                 input_topic,
                 output_topic,
                 self.cmd_vel_timeout_sec,
-                navigate_status_topic,
-                recovery_status_topic,
-                str(self.invert_linear_y).lower(),
+                str(self.force_zero_angular_z).lower(),
             )
         )
 
@@ -93,8 +91,7 @@ class CmdVelToNavCmd(Node):
         self.latest_cmd_time = self.get_clock().now()
         self.has_cmd = True
         self.timeout_reported = False
-        if self.recovery_state not in ("LOST", "RECOVERING"):
-            self.nav_cmd_pub.publish(self.twist_to_nav_cmd(msg, is_reached=0))
+        self.nav_cmd_pub.publish(self.twist_to_nav_cmd(msg, is_reached=0))
 
     def on_goal_status(self, msg: GoalStatusArray) -> None:
         if not msg.status_list:
@@ -105,27 +102,20 @@ class CmdVelToNavCmd(Node):
             now = self.get_clock().now()
             self.goal_reached_until = now + Duration(seconds=self.goal_reached_latch_sec)
             self.nav_cmd_pub.publish(self.twist_to_nav_cmd(Twist(), is_reached=1))
-            self.get_logger().info("NavigateToPose succeeded, latching nav_cmd.is_reached=1")
         elif latest_status in (
             GoalStatus.STATUS_ACCEPTED,
             GoalStatus.STATUS_EXECUTING,
             GoalStatus.STATUS_CANCELING,
+            GoalStatus.STATUS_ABORTED,
+            GoalStatus.STATUS_CANCELED,
         ):
             self.goal_reached_until = None
-        elif latest_status in (GoalStatus.STATUS_ABORTED, GoalStatus.STATUS_CANCELED):
-            self.goal_reached_until = None
-
-    def on_recovery_status(self, msg: String) -> None:
-        self.recovery_state = msg.data
 
     def on_timer(self) -> None:
-        if self.recovery_state in ("LOST", "RECOVERING"):
-            self.goal_reached_until = None
-            self.nav_cmd_pub.publish(self.twist_to_nav_cmd(Twist(), is_reached=0))
-            return
+        now = self.get_clock().now()
 
         if self.goal_reached_until is not None:
-            if self.get_clock().now() <= self.goal_reached_until:
+            if now <= self.goal_reached_until:
                 self.nav_cmd_pub.publish(self.twist_to_nav_cmd(Twist(), is_reached=1))
                 return
             self.goal_reached_until = None
@@ -133,7 +123,7 @@ class CmdVelToNavCmd(Node):
         if not self.has_cmd:
             return
 
-        age = (self.get_clock().now() - self.latest_cmd_time).nanoseconds / 1e9
+        age = (now - self.latest_cmd_time).nanoseconds / 1e9
         if age <= self.cmd_vel_timeout_sec:
             self.nav_cmd_pub.publish(self.twist_to_nav_cmd(self.latest_cmd, is_reached=0))
             return
@@ -142,7 +132,7 @@ class CmdVelToNavCmd(Node):
         if not self.timeout_reported:
             self.timeout_reported = True
             self.get_logger().warn(
-                "cmd_vel timeout %.3fs > %.3fs, publishing continuous zero /nav_cmd"
+                "PB cmd_vel timeout %.3fs > %.3fs; publishing zero NavCmd"
                 % (age, self.cmd_vel_timeout_sec)
             )
 
@@ -157,7 +147,7 @@ class CmdVelToNavCmd(Node):
 
 def main(args=None) -> None:
     rclpy.init(args=args)
-    node = CmdVelToNavCmd()
+    node = PbCmdVelToNavCmd()
     try:
         rclpy.spin(node)
     except (KeyboardInterrupt, ExternalShutdownException):

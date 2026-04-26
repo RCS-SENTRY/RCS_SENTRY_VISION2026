@@ -8,6 +8,7 @@
 #include <unordered_map>
 #include <utility>
 #include <vector>
+#include <chrono>
 
 #include <Eigen/Geometry>
 
@@ -20,6 +21,7 @@
 #include <geometry_msgs/msg/transform_stamped.hpp>
 #include <rclcpp/rclcpp.hpp>
 #include <sensor_msgs/msg/point_cloud2.hpp>
+#include <std_msgs/msg/string.hpp>
 #include <tf2/exceptions.h>
 #include <tf2_ros/buffer.h>
 #include <tf2_ros/transform_listener.h>
@@ -115,56 +117,61 @@ public:
     max_height_ = static_cast<float>(this->declare_parameter<double>("max_height", 1.50));
     min_range_ = static_cast<float>(this->declare_parameter<double>("min_range", 0.20));
     max_range_ = static_cast<float>(this->declare_parameter<double>("max_range", 5.00));
-    memory_resolution_ = static_cast<float>(this->declare_parameter<double>("memory_resolution", 0.10));
-    fading_timeout_sec_ = this->declare_parameter<double>("fading_timeout_sec", 1.20);
+    memory_resolution_ = static_cast<float>(this->declare_parameter<double>("memory_resolution", 0.06));
+    fading_timeout_sec_ = this->declare_parameter<double>("fading_timeout_sec", 1.80);
     transform_timeout_sec_ = this->declare_parameter<double>("transform_timeout_sec", 0.05);
+    allow_latest_tf_fallback_ = this->declare_parameter<bool>("allow_latest_tf_fallback", true);
+    debug_log_period_sec_ = this->declare_parameter<double>("debug_log_period_sec", 2.0);
 
     body_box_.name = "body_exclusion_box";
     body_box_.enabled = this->declare_parameter<bool>("body_box.enabled", true);
     body_box_.min = toVector3(
       this->declare_parameter<std::vector<double>>(
-        "body_box.min", {-0.30, -0.30, -0.10}),
+        "body_box.min", {-0.27, -0.27, -0.05}),
       "body_box.min");
     body_box_.max = toVector3(
       this->declare_parameter<std::vector<double>>(
-        "body_box.max", {0.30, 0.30, 0.60}),
+        "body_box.max", {0.27, 0.27, 0.60}),
       "body_box.max");
 
     gimbal_box_.name = "gimbal_exclusion_box";
     gimbal_box_.enabled = this->declare_parameter<bool>("gimbal_box.enabled", true);
     gimbal_box_.min = toVector3(
       this->declare_parameter<std::vector<double>>(
-        "gimbal_box.min", {-0.15, -0.15, 0.40}),
+        "gimbal_box.min", {-0.16, -0.16, 0.42}),
       "gimbal_box.min");
     gimbal_box_.max = toVector3(
       this->declare_parameter<std::vector<double>>(
-        "gimbal_box.max", {0.15, 0.15, 0.80}),
+        "gimbal_box.max", {0.16, 0.16, 0.80}),
       "gimbal_box.max");
 
     gimbal_support_box_.name = "gimbal_support_exclusion_box";
     gimbal_support_box_.enabled = this->declare_parameter<bool>("gimbal_support_box.enabled", true);
     gimbal_support_box_.min = toVector3(
       this->declare_parameter<std::vector<double>>(
-        "gimbal_support_box.min", {-0.08, -0.08, 0.25}),
+        "gimbal_support_box.min", {-0.10, -0.10, 0.20}),
       "gimbal_support_box.min");
     gimbal_support_box_.max = toVector3(
       this->declare_parameter<std::vector<double>>(
-        "gimbal_support_box.max", {0.08, 0.08, 0.45}),
+        "gimbal_support_box.max", {0.10, 0.10, 0.48}),
       "gimbal_support_box.max");
 
     lidar_arm_box_.name = "lidar_arm_exclusion_box";
     lidar_arm_box_.enabled = this->declare_parameter<bool>("lidar_arm_box.enabled", true);
     lidar_arm_box_.min = toVector3(
       this->declare_parameter<std::vector<double>>(
-        "lidar_arm_box.min", {-0.05, 0.10, 0.20}),
+        "lidar_arm_box.min", {-0.08, 0.10, 0.18}),
       "lidar_arm_box.min");
     lidar_arm_box_.max = toVector3(
       this->declare_parameter<std::vector<double>>(
-        "lidar_arm_box.max", {0.10, 0.35, 0.50}),
+        "lidar_arm_box.max", {0.12, 0.35, 0.52}),
       "lidar_arm_box.max");
 
     publisher_ = this->create_publisher<sensor_msgs::msg::PointCloud2>(
       output_topic_,
+      rclcpp::QoS(rclcpp::KeepLast(10)).reliable());
+    debug_publisher_ = this->create_publisher<std_msgs::msg::String>(
+      "/obstacle_memory_debug",
       rclcpp::QoS(rclcpp::KeepLast(10)).reliable());
 
     primary_sub_ = this->create_subscription<sensor_msgs::msg::PointCloud2>(
@@ -179,6 +186,13 @@ public:
         std::bind(&ObstacleCloudFilterNode::handleCloud, this, std::placeholders::_1));
     }
 
+    if (debug_log_period_sec_ > 0.0) {
+      debug_timer_ = this->create_wall_timer(
+        std::chrono::duration_cast<std::chrono::nanoseconds>(
+          std::chrono::duration<double>(debug_log_period_sec_)),
+        std::bind(&ObstacleCloudFilterNode::logDebugState, this));
+    }
+
     RCLCPP_INFO(
       get_logger(),
       "Obstacle memory ready: primary=%s secondary=%s output=%s memory_frame=%s",
@@ -191,13 +205,16 @@ public:
 private:
   void handleCloud(const sensor_msgs::msg::PointCloud2::ConstSharedPtr msg)
   {
+    ++received_cloud_count_;
     if (msg->header.frame_id.empty()) {
+      last_drop_reason_ = "missing_frame_id";
       RCLCPP_WARN_THROTTLE(
         get_logger(), *get_clock(), 2000,
         "Received cloud without frame_id, dropping");
       return;
     }
     if (msg->header.stamp.sec == 0 && msg->header.stamp.nanosec == 0) {
+      last_drop_reason_ = "missing_stamp";
       RCLCPP_WARN_THROTTLE(
         get_logger(), *get_clock(), 2000,
         "Received cloud without valid stamp, dropping");
@@ -209,6 +226,12 @@ private:
     if (!filtered_cloud) {
       return;
     }
+    ++transformed_cloud_count_;
+    if (filtered_cloud->empty()) {
+      last_drop_reason_ = "filtered_empty";
+    } else {
+      last_drop_reason_ = "ok";
+    }
 
     updateMemory(*filtered_cloud, stamp);
     publishMemory(stamp);
@@ -219,6 +242,8 @@ private:
     auto input_cloud = std::make_shared<Cloud>();
     pcl::fromROSMsg(msg, *input_cloud);
     if (input_cloud->empty()) {
+      ++empty_input_count_;
+      last_drop_reason_ = "input_empty";
       return std::make_shared<Cloud>();
     }
 
@@ -227,6 +252,7 @@ private:
 
     auto cloud_in_base = std::make_shared<Cloud>();
     if (!transformCloudExact(*input_cloud, msg.header.frame_id, base_frame_, stamp, *cloud_in_base)) {
+      last_drop_reason_ = "tf_to_base_failed";
       return nullptr;
     }
 
@@ -261,9 +287,50 @@ private:
 
     auto filtered_in_target = std::make_shared<Cloud>();
     if (!transformCloudExact(filtered_in_base, base_frame_, target_frame_, stamp, *filtered_in_target)) {
+      last_drop_reason_ = "tf_to_memory_failed";
       return nullptr;
     }
+    if (filtered_in_target->empty()) {
+      ++empty_after_filter_count_;
+    }
     return filtered_in_target;
+  }
+
+  void logDebugState()
+  {
+    std::size_t memory_cells = 0U;
+    {
+      std::lock_guard<std::mutex> lock(memory_mutex_);
+      memory_cells = memory_.size();
+    }
+
+    std_msgs::msg::String debug_msg;
+    debug_msg.data =
+      "received=" + std::to_string(received_cloud_count_) +
+      " transformed=" + std::to_string(transformed_cloud_count_) +
+      " exact_tf=" + std::to_string(exact_tf_success_count_) +
+      " latest_tf_fallback=" + std::to_string(latest_tf_fallback_count_) +
+      " dropped_tf=" + std::to_string(dropped_tf_count_) +
+      " empty_input=" + std::to_string(empty_input_count_) +
+      " empty_after_filter=" + std::to_string(empty_after_filter_count_) +
+      " cells=" + std::to_string(memory_cells) +
+      " last_drop_reason=" + last_drop_reason_;
+    debug_publisher_->publish(debug_msg);
+
+    RCLCPP_INFO_THROTTLE(
+      get_logger(), *get_clock(), 2000,
+      "Obstacle memory status: received=%llu transformed=%llu exact_tf=%llu "
+      "latest_tf_fallback=%llu dropped_tf=%llu empty_input=%llu "
+      "empty_after_filter=%llu cells=%zu last_drop_reason=%s",
+      static_cast<unsigned long long>(received_cloud_count_),
+      static_cast<unsigned long long>(transformed_cloud_count_),
+      static_cast<unsigned long long>(exact_tf_success_count_),
+      static_cast<unsigned long long>(latest_tf_fallback_count_),
+      static_cast<unsigned long long>(dropped_tf_count_),
+      static_cast<unsigned long long>(empty_input_count_),
+      static_cast<unsigned long long>(empty_after_filter_count_),
+      memory_cells,
+      last_drop_reason_.c_str());
   }
 
   bool transformCloudExact(
@@ -279,18 +346,46 @@ private:
     }
 
     try {
-      const auto transform = tf_buffer_.lookupTransform(
+      const auto exact_transform = tf_buffer_.lookupTransform(
         target_frame,
         source_frame,
         stamp,
         rclcpp::Duration::from_seconds(transform_timeout_sec_));
-      pcl::transformPointCloud(input_cloud, output_cloud, transformToEigen(transform));
+      pcl::transformPointCloud(input_cloud, output_cloud, transformToEigen(exact_transform));
+      ++exact_tf_success_count_;
       return true;
-    } catch (const tf2::TransformException & ex) {
+    } catch (const tf2::TransformException & exact_ex) {
+      if (allow_latest_tf_fallback_) {
+        try {
+          const auto latest_transform = tf_buffer_.lookupTransform(
+            target_frame,
+            source_frame,
+            rclcpp::Time(0, 0, get_clock()->get_clock_type()),
+            rclcpp::Duration::from_seconds(transform_timeout_sec_));
+          pcl::transformPointCloud(input_cloud, output_cloud, transformToEigen(latest_transform));
+          ++latest_tf_fallback_count_;
+          RCLCPP_WARN_THROTTLE(
+            get_logger(), *get_clock(), 2000,
+            "Exact TF failed for %s -> %s at stamp %.6f, falling back to latest TF: %s",
+            source_frame.c_str(), target_frame.c_str(), stamp.seconds(), exact_ex.what());
+          return true;
+        } catch (const tf2::TransformException & latest_ex) {
+          ++dropped_tf_count_;
+          RCLCPP_WARN_THROTTLE(
+            get_logger(), *get_clock(), 2000,
+            "Failed to transform cloud %s -> %s at stamp %.6f with exact and latest TF. "
+            "exact='%s' latest='%s'",
+            source_frame.c_str(), target_frame.c_str(), stamp.seconds(),
+            exact_ex.what(), latest_ex.what());
+          return false;
+        }
+      }
+
+      ++dropped_tf_count_;
       RCLCPP_WARN_THROTTLE(
         get_logger(), *get_clock(), 2000,
         "Failed to transform cloud %s -> %s at stamp %.6f: %s",
-        source_frame.c_str(), target_frame.c_str(), stamp.seconds(), ex.what());
+        source_frame.c_str(), target_frame.c_str(), stamp.seconds(), exact_ex.what());
       return false;
     }
   }
@@ -364,10 +459,20 @@ private:
   float min_height_{0.05F};
   float max_height_{1.50F};
   float min_range_{0.20F};
-  float max_range_{5.00F};
-  float memory_resolution_{0.10F};
-  double fading_timeout_sec_{1.20};
+  float max_range_{5.50F};
+  float memory_resolution_{0.06F};
+  double fading_timeout_sec_{1.80};
   double transform_timeout_sec_{0.05};
+  bool allow_latest_tf_fallback_{true};
+  double debug_log_period_sec_{2.0};
+  std::string last_drop_reason_{"startup"};
+  std::uint64_t received_cloud_count_{0U};
+  std::uint64_t transformed_cloud_count_{0U};
+  std::uint64_t exact_tf_success_count_{0U};
+  std::uint64_t latest_tf_fallback_count_{0U};
+  std::uint64_t dropped_tf_count_{0U};
+  std::uint64_t empty_input_count_{0U};
+  std::uint64_t empty_after_filter_count_{0U};
 
   ExclusionBox body_box_;
   ExclusionBox gimbal_box_;
@@ -378,8 +483,10 @@ private:
   std::mutex memory_mutex_;
 
   rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr publisher_;
+  rclcpp::Publisher<std_msgs::msg::String>::SharedPtr debug_publisher_;
   rclcpp::Subscription<sensor_msgs::msg::PointCloud2>::SharedPtr primary_sub_;
   rclcpp::Subscription<sensor_msgs::msg::PointCloud2>::SharedPtr secondary_sub_;
+  rclcpp::TimerBase::SharedPtr debug_timer_;
 
   tf2_ros::Buffer tf_buffer_;
   tf2_ros::TransformListener tf_listener_;

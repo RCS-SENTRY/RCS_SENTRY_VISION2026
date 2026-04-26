@@ -38,6 +38,7 @@ ament_target_dependencies(obstacle_cloud_filter_node
   pcl_conversions
   rclcpp
   sensor_msgs
+  std_msgs
   tf2_ros
 )
 
@@ -100,6 +101,7 @@ install(DIRECTORY rviz/
 # 安装轻量脚本节点
 install(PROGRAMS
   scripts/cmd_vel_to_nav_cmd.py
+  scripts/pb_cmd_vel_to_nav_cmd.py
   scripts/initial_pose_manager.py
   scripts/pcd2pgm.py
   DESTINATION lib/${PROJECT_NAME}

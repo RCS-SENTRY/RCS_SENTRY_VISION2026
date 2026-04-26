@@ -1,0 +1,37 @@
+# PB2025 navigation-domain frames adapted to the XMU sentry.
+#
+# Runtime authoritative chain:
+#   map -> odom -> base_footprint -> base_link -> front_mid360
+#                                      \
+#                                       -> gimbal_yaw -> gimbal_yaw_fake
+#
+# sensor_scan_generation publishes odom -> base_footprint.
+# fake_vel_transform publishes gimbal_yaw -> gimbal_yaw_fake.
+# The static transforms below are published by pb2025_takeover_bringup.launch.py.
+
+frames:
+  map_frame: map
+  odom_frame: odom
+  base_frame: base_footprint
+  xmu_base_frame: base_link
+  robot_base_frame: gimbal_yaw
+  fake_robot_base_frame: gimbal_yaw_fake
+  lidar_frame: front_mid360
+  legacy_lidar_frame: livox_frame
+
+xmu_lidar_extrinsic:
+  parent_frame: base_link
+  child_frame: front_mid360
+  x: 0.0
+  y: 0.2
+  z: 0.35
+  roll: 0.0
+  pitch: 0.3115
+  yaw: 1.5708
+
+xmu_chassis:
+  length: 0.50
+  width: 0.50
+  height: 0.55
+  footprint: [[-0.25, -0.25], [-0.25, 0.25], [0.25, 0.25], [0.25, -0.25]]
+  robot_radius: 0.36

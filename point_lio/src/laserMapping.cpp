@@ -83,6 +83,46 @@ Eigen::Matrix<double, 30, 30> P_init_output_reset = Eigen::Matrix<double, 30, 30
 
 auto logger = rclcpp::get_logger("laserMapping");
 
+Eigen::Isometry3d baseToLidarTransform()
+{
+    Eigen::Isometry3d T = Eigen::Isometry3d::Identity();
+    if (base_to_lidar_translation.size() == 3) {
+        T.translation() = Eigen::Vector3d(
+            base_to_lidar_translation[0],
+            base_to_lidar_translation[1],
+            base_to_lidar_translation[2]);
+    }
+
+    if (base_to_lidar_rpy.size() == 3) {
+        const Eigen::AngleAxisd roll(base_to_lidar_rpy[0], Eigen::Vector3d::UnitX());
+        const Eigen::AngleAxisd pitch(base_to_lidar_rpy[1], Eigen::Vector3d::UnitY());
+        const Eigen::AngleAxisd yaw(base_to_lidar_rpy[2], Eigen::Vector3d::UnitZ());
+        T.linear() = (yaw * pitch * roll).toRotationMatrix();
+    }
+    return T;
+}
+
+template<typename T>
+void set_sensor_posestamp(T &out) {
+    if (!use_imu_as_input) {
+        out.position.x = kf_output.x_.pos(0);
+        out.position.y = kf_output.x_.pos(1);
+        out.position.z = kf_output.x_.pos(2);
+        out.orientation.x = kf_output.x_.rot.coeffs()[0];
+        out.orientation.y = kf_output.x_.rot.coeffs()[1];
+        out.orientation.z = kf_output.x_.rot.coeffs()[2];
+        out.orientation.w = kf_output.x_.rot.coeffs()[3];
+    } else {
+        out.position.x = kf_input.x_.pos(0);
+        out.position.y = kf_input.x_.pos(1);
+        out.position.z = kf_input.x_.pos(2);
+        out.orientation.x = kf_input.x_.rot.coeffs()[0];
+        out.orientation.y = kf_input.x_.rot.coeffs()[1];
+        out.orientation.z = kf_input.x_.rot.coeffs()[2];
+        out.orientation.w = kf_input.x_.rot.coeffs()[3];
+    }
+}
+
 void SigHandle(int sig) {
     flg_exit = true;
     RCLCPP_WARN(logger, "catch sig %d", sig);
@@ -720,42 +760,60 @@ void publish_frame_body(const rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::
 
 template<typename T>
 void set_posestamp(T &out) {
-    if (!use_imu_as_input) {
-        out.position.x = kf_output.x_.pos(0);
-        out.position.y = kf_output.x_.pos(1);
-        out.position.z = kf_output.x_.pos(2);
-        out.orientation.x = kf_output.x_.rot.coeffs()[0];
-        out.orientation.y = kf_output.x_.rot.coeffs()[1];
-        out.orientation.z = kf_output.x_.rot.coeffs()[2];
-        out.orientation.w = kf_output.x_.rot.coeffs()[3];
-    } else {
-        out.position.x = kf_input.x_.pos(0);
-        out.position.y = kf_input.x_.pos(1);
-        out.position.z = kf_input.x_.pos(2);
-        out.orientation.x = kf_input.x_.rot.coeffs()[0];
-        out.orientation.y = kf_input.x_.rot.coeffs()[1];
-        out.orientation.z = kf_input.x_.rot.coeffs()[2];
-        out.orientation.w = kf_input.x_.rot.coeffs()[3];
-    }
+    geometry_msgs::msg::Pose sensor_pose;
+    set_sensor_posestamp(sensor_pose);
+
+    const Eigen::Quaterniond q_sensor(
+        sensor_pose.orientation.w,
+        sensor_pose.orientation.x,
+        sensor_pose.orientation.y,
+        sensor_pose.orientation.z);
+    Eigen::Isometry3d T_odom_lidar = Eigen::Isometry3d::Identity();
+    T_odom_lidar.linear() = q_sensor.normalized().toRotationMatrix();
+    T_odom_lidar.translation() = Eigen::Vector3d(
+        sensor_pose.position.x,
+        sensor_pose.position.y,
+        sensor_pose.position.z);
+
+    const Eigen::Isometry3d T_lidar_base = baseToLidarTransform().inverse();
+    const Eigen::Isometry3d T_odom_base = T_odom_lidar * T_lidar_base;
+    const Eigen::Quaterniond q_base(T_odom_base.rotation());
+
+    out.position.x = T_odom_base.translation().x();
+    out.position.y = T_odom_base.translation().y();
+    out.position.z = T_odom_base.translation().z();
+    out.orientation.x = q_base.x();
+    out.orientation.y = q_base.y();
+    out.orientation.z = q_base.z();
+    out.orientation.w = q_base.w();
 }
 
 template<typename T>
 void set_twist(T &out) {
+    const Eigen::Matrix3d R_lidar_base = baseToLidarTransform().inverse().rotation();
+    Eigen::Vector3d linear = Eigen::Vector3d::Zero();
+    Eigen::Vector3d angular = Eigen::Vector3d::Zero();
+
     if (!use_imu_as_input) {
-        out.linear.x = kf_output.x_.vel(0);
-        out.linear.y = kf_output.x_.vel(1);
-        out.linear.z = kf_output.x_.vel(2);
-        out.angular.x = kf_output.x_.omg(0);
-        out.angular.y = kf_output.x_.omg(1);
-        out.angular.z = kf_output.x_.omg(2);
+        linear = kf_output.x_.vel;
+        angular = kf_output.x_.omg;
     } else {
-        out.linear.x = kf_input.x_.vel(0);
-        out.linear.y = kf_input.x_.vel(1);
-        out.linear.z = kf_input.x_.vel(2);
-        out.angular.x = imu_last.angular_velocity.x;
-        out.angular.y = imu_last.angular_velocity.y;
-        out.angular.z = imu_last.angular_velocity.z;
+        linear = kf_input.x_.vel;
+        angular = Eigen::Vector3d(
+            imu_last.angular_velocity.x,
+            imu_last.angular_velocity.y,
+            imu_last.angular_velocity.z);
     }
+
+    linear = R_lidar_base * linear;
+    angular = R_lidar_base * angular;
+
+    out.linear.x = linear.x();
+    out.linear.y = linear.y();
+    out.linear.z = linear.z();
+    out.angular.x = angular.x();
+    out.angular.y = angular.y();
+    out.angular.z = angular.z();
 }
 
 void publish_odometry(const rclcpp::Publisher<nav_msgs::msg::Odometry>::SharedPtr &pubOdomAftMapped,

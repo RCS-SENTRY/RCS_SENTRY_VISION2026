@@ -2,6 +2,7 @@ cmake_minimum_required(VERSION 3.16)
 project(small_gicp VERSION 1.0.0 LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_LIST_DIR}/cmake")
 
 if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
@@ -102,6 +103,15 @@ if(MSVC)
     add_compile_options(/openmp:llvm)
   endif()
 endif()
+
+message(STATUS "==== small_gicp build summary ====")
+message(STATUS "CMAKE_BUILD_TYPE=${CMAKE_BUILD_TYPE}")
+message(STATUS "BUILD_HELPER=${BUILD_HELPER}")
+message(STATUS "BUILD_PYTHON_BINDINGS=${BUILD_PYTHON_BINDINGS}")
+message(STATUS "BUILD_WITH_OPENMP=${BUILD_WITH_OPENMP}")
+message(STATUS "BUILD_WITH_TBB=${BUILD_WITH_TBB}")
+message(STATUS "BUILD_WITH_PCL=${BUILD_WITH_PCL}")
+message(STATUS "=================================")
 
 ##############
 ## Coverage ##

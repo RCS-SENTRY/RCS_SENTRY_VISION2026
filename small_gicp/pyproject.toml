@@ -27,6 +27,8 @@ wheel.py-api = "cp312" # Build stable ABI wheels for CPython 3.12+
 BUILD_PYTHON_BINDINGS = true
 BUILD_HELPER = false
 BUILD_SHARED_LIBS = false
+CMAKE_EXPORT_COMPILE_COMMANDS = true
+CMAKE_BUILD_TYPE = "RelWithDebInfo"
 
 [tool.cibuildwheel.linux]
 before-all = "yum install -y libomp-devel"

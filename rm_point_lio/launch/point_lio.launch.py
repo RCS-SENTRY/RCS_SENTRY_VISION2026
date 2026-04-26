@@ -58,6 +58,30 @@ def generate_launch_description():
         'use_sim_time', default_value='false',
         description='Use simulation clock (true for Gazebo, false for real hardware)'
     )
+    lidar_x_arg = DeclareLaunchArgument(
+        'lidar_x', default_value='0.0',
+        description='base_link -> livox_frame translation x (m)'
+    )
+    lidar_y_arg = DeclareLaunchArgument(
+        'lidar_y', default_value='0.2',
+        description='base_link -> livox_frame translation y (m)'
+    )
+    lidar_z_arg = DeclareLaunchArgument(
+        'lidar_z', default_value='0.35',
+        description='base_link -> livox_frame translation z (m)'
+    )
+    lidar_roll_arg = DeclareLaunchArgument(
+        'lidar_roll', default_value='0.0',
+        description='base_link -> livox_frame roll (rad)'
+    )
+    lidar_pitch_arg = DeclareLaunchArgument(
+        'lidar_pitch', default_value='0.3115',
+        description='base_link -> livox_frame pitch (rad)'
+    )
+    lidar_yaw_arg = DeclareLaunchArgument(
+        'lidar_yaw', default_value='1.5708',
+        description='base_link -> livox_frame yaw (rad)'
+    )
     # ================================================================
     # Point-LIO core node
     # ================================================================
@@ -88,6 +112,16 @@ def generate_launch_description():
             'filter_size_map': 0.5,
             'cube_side_length': 1000.0,
             'runtime_pos_log_enable': False,
+            'base_to_lidar.translation': [
+                LaunchConfiguration('lidar_x'),
+                LaunchConfiguration('lidar_y'),
+                LaunchConfiguration('lidar_z'),
+            ],
+            'base_to_lidar.rpy': [
+                LaunchConfiguration('lidar_roll'),
+                LaunchConfiguration('lidar_pitch'),
+                LaunchConfiguration('lidar_yaw'),
+            ],
 
             # -- Sim time --
             'use_sim_time': LaunchConfiguration('use_sim_time'),
@@ -120,6 +154,12 @@ def generate_launch_description():
         # Arguments
         rviz_arg,
         use_sim_time_arg,
+        lidar_x_arg,
+        lidar_y_arg,
+        lidar_z_arg,
+        lidar_roll_arg,
+        lidar_pitch_arg,
+        lidar_yaw_arg,
         # Nodes
         pointlio_node,
         rviz_node,

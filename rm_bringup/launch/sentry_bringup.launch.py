@@ -279,6 +279,12 @@ def generate_launch_description():
             launch_arguments={
                 'rviz': 'false',
                 'use_sim_time': LaunchConfiguration('use_sim_time'),
+                'lidar_x': LaunchConfiguration('lidar_x'),
+                'lidar_y': LaunchConfiguration('lidar_y'),
+                'lidar_z': LaunchConfiguration('lidar_z'),
+                'lidar_roll': LaunchConfiguration('lidar_roll'),
+                'lidar_pitch': LaunchConfiguration('lidar_pitch'),
+                'lidar_yaw': LaunchConfiguration('lidar_yaw'),
             }.items(),
         )],
         condition=navigation_enabled,
