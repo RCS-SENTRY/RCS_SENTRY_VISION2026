@@ -1,0 +1,51 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>rm_bringup</name>
+  <version>0.2.0</version>
+  <description>RoboMaster sentry bringup for XMU communication, vision, autoaim, and PB2025 navigation.</description>
+  <maintainer email="rm@xmu.edu.cn">RM Team</maintainer>
+  <license>MIT</license>
+
+  <buildtool_depend>ament_cmake</buildtool_depend>
+
+  <exec_depend>action_msgs</exec_depend>
+  <exec_depend>geometry_msgs</exec_depend>
+  <exec_depend>launch</exec_depend>
+  <exec_depend>launch_ros</exec_depend>
+  <exec_depend>nav2_behaviors</exec_depend>
+  <exec_depend>nav2_bt_navigator</exec_depend>
+  <exec_depend>nav2_common</exec_depend>
+  <exec_depend>nav2_controller</exec_depend>
+  <exec_depend>nav2_lifecycle_manager</exec_depend>
+  <exec_depend>nav2_map_server</exec_depend>
+  <exec_depend>nav2_planner</exec_depend>
+  <exec_depend>nav2_smoother</exec_depend>
+  <exec_depend>nav2_velocity_smoother</exec_depend>
+  <exec_depend>nav2_waypoint_follower</exec_depend>
+  <exec_depend>pb2025_nav_bringup</exec_depend>
+  <exec_depend>pb_nav2_plugins</exec_depend>
+  <exec_depend>pb_omni_pid_pursuit_controller</exec_depend>
+  <exec_depend>fake_vel_transform</exec_depend>
+  <exec_depend>livox_ros_driver2</exec_depend>
+  <exec_depend>loam_interface</exec_depend>
+  <exec_depend>point_lio</exec_depend>
+  <exec_depend>pointcloud_to_laserscan</exec_depend>
+  <exec_depend>rclpy</exec_depend>
+  <exec_depend>rm_autoaim</exec_depend>
+  <exec_depend>rm_hik_driver</exec_depend>
+  <exec_depend>rm_hw_bridge</exec_depend>
+  <exec_depend>rm_interfaces</exec_depend>
+  <exec_depend>rm_vision</exec_depend>
+  <exec_depend>sensor_scan_generation</exec_depend>
+  <exec_depend>sentry_bt</exec_depend>
+  <exec_depend>slam_toolbox</exec_depend>
+  <exec_depend>small_gicp_relocalization</exec_depend>
+  <exec_depend>terrain_analysis</exec_depend>
+  <exec_depend>terrain_analysis_ext</exec_depend>
+  <exec_depend>tf2_ros</exec_depend>
+
+  <export>
+    <build_type>ament_cmake</build_type>
+  </export>
+</package>

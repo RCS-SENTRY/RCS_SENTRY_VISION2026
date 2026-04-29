@@ -1,0 +1,16 @@
+xmu_chassis:
+  length: 0.50
+  width: 0.50
+  height: 0.55
+  footprint: [[-0.25, -0.25], [-0.25, 0.25], [0.25, 0.25], [0.25, -0.25]]
+  robot_radius: 0.36
+
+xmu_lidar_extrinsic:
+  parent_frame: base_link
+  child_frame: front_mid360
+  x: 0.0
+  y: 0.2
+  z: 0.35
+  roll: 0.0
+  pitch: 0.3115
+  yaw: 1.5708
