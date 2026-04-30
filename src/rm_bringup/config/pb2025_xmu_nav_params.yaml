@@ -113,7 +113,7 @@ terrain_analysis:
     noDecayDis: 0.0                     # 点云距离阈值 小于该阈值不考虑时间差
     clearingDis: 0.0                    # 该距离外的点会被清除
     useSorting: True                    # 这个参数开起来就能上坡了；如果 use_sorting,那么就以周围点中的分位点作为地面点，否则以最低点作为地面点；周围其余点相对于地面点的高度作为通过代价，所以对于坡面，有的点的代价是正，有的是负，就相互抵消了；不要与 consider_drop 同时开启，计算上会有冲突
-    quantileZ: 0.25                     # useful if use_sorting is enabled.
+    quantileZ: 0.2                      # useful if use_sorting is enabled.
     considerDrop: False                 # 考虑凹下去的地面,开启则将相对于地面点的高度取绝对值
     limitGroundLift: False
     maxGroundLift: 0.3
@@ -132,8 +132,8 @@ terrain_analysis:
     voxelPointUpdateThre: 100
     voxelTimeUpdateThre: 1.0
     minRelZ: -1.5                       # min_rel_z 以及 max_rel_z 限制了有效点云点的Z值范围，用于对天花板和地板进行处理
-    maxRelZ: 0.60
-    disRatioZ: 0.25                     # Z 值的最大最小范围由这两个值决定，但是并不等于这两个值，是有一个比例关系的，距离机器人越远，限定范围就越大，这其中考虑了坡度
+    maxRelZ: 0.5
+    disRatioZ: 0.2                      # Z 值的最大最小范围由这两个值决定，但是并不等于这两个值，是有一个比例关系的，距离机器人越远，限定范围就越大，这其中考虑了坡度
 
 terrain_analysis_ext:
   ros__parameters:
@@ -142,13 +142,13 @@ terrain_analysis_ext:
     noDecayDis: 0.0
     clearingDis: 20.0
     useSorting: true
-    quantileZ: 0.25
+    quantileZ: 0.2
     vehicleHeight: 0.55
     voxelPointUpdateThre: 100
     voxelTimeUpdateThre: 2.0
     lowerBoundZ: -1.5
-    upperBoundZ: 0.60
-    disRatioZ: 0.25
+    upperBoundZ: 0.5
+    disRatioZ: 0.2
     checkTerrainConn: False
     terrainUnderVehicle: -0.75
     terrainConnThre: 0.5
@@ -283,8 +283,8 @@ bt_navigator:
     bt_loop_duration: 10
     default_server_timeout: 100
     wait_for_service_timeout: 1000
-    default_nav_to_pose_bt_xml: $(find-pkg-share rm_bringup)/config/pb2025_xmu_navigate_to_pose_no_move_recovery.xml
-    default_nav_through_poses_bt_xml: $(find-pkg-share rm_bringup)/config/pb2025_xmu_navigate_through_poses_no_move_recovery.xml
+    default_nav_to_pose_bt_xml: $(find-pkg-share pb2025_nav_bringup)/behavior_trees/navigate_to_pose_w_replanning_and_recovery.xml
+    default_nav_through_poses_bt_xml: $(find-pkg-share pb2025_nav_bringup)/behavior_trees/navigate_through_poses_w_replanning_and_recovery.xml
     plugin_lib_names:
       - nav2_compute_path_to_pose_action_bt_node
       - nav2_compute_path_through_poses_action_bt_node
@@ -340,7 +340,7 @@ controller_server:
     odom_topic: odometry
     controller_frequency: 20.0
     min_x_velocity_threshold: 0.001
-    min_y_velocity_threshold: 0.001
+    min_y_velocity_threshold: 0.5
     min_theta_velocity_threshold: 0.001
     failure_tolerance: 0.3
     progress_checker_plugins: ["progress_checker"]
@@ -353,13 +353,13 @@ controller_server:
     general_goal_checker:
       stateful: True
       plugin: "nav2_controller::SimpleGoalChecker"
-      xy_goal_tolerance: 0.20
+      xy_goal_tolerance: 0.15
       yaw_goal_tolerance: 6.28
     FollowPath:
       plugin: "pb_omni_pid_pursuit_controller::OmniPidPursuitController"
-      translation_kp: 2.0
-      translation_ki: 0.0
-      translation_kd: 0.2
+      translation_kp: 3.0
+      translation_ki: 0.1
+      translation_kd: 0.3
       enable_rotation: false
       rotation_kp: 3.0
       rotation_ki: 0.1
@@ -374,12 +374,12 @@ controller_server:
       use_interpolation: false
       use_rotate_to_heading: false
       use_rotate_to_heading_treshold: 0.1
-      min_approach_linear_velocity: 0.08
-      approach_velocity_scaling_dist: 0.6
-      v_linear_min: -2.0
-      v_linear_max: 2.0
-      v_angular_min: -0.8
-      v_angular_max: 0.8
+      min_approach_linear_velocity: 0.5
+      approach_velocity_scaling_dist: 1.0
+      v_linear_min: -2.5
+      v_linear_max: 2.5
+      v_angular_min: -3.0
+      v_angular_max: 3.0
       curvature_min: 0.4                                # 低曲率阈值，低于此值不减速。
       curvature_max: 0.7                                # 高曲率阈值，高于此值大幅减速。
       reduction_ratio_at_high_curvature: 0.5            # 高曲率时的速度降低比例。 0.5 (即减速 50%)
@@ -401,7 +401,7 @@ local_costmap:
       resolution: 0.05
       footprint: "[[-0.25, -0.25], [-0.25, 0.25], [0.25, 0.25], [0.25, -0.25]]"
       robot_radius: 0.36
-      plugins: ["static_layer", "intensity_voxel_layer", "second_lidar_obstacle_layer", "inflation_layer"]
+      plugins: ["static_layer", "intensity_voxel_layer", "inflation_layer"]
       intensity_voxel_layer:
         plugin: pb_nav2_costmap_2d::IntensityVoxelLayer
         enabled: true
@@ -430,23 +430,6 @@ local_costmap:
       static_layer:
         plugin: "nav2_costmap_2d::StaticLayer"
         map_subscribe_transient_local: True
-      second_lidar_obstacle_layer:
-        plugin: "nav2_costmap_2d::ObstacleLayer"
-        enabled: false
-        observation_sources: second_lidar
-        footprint_clearing_enabled: false
-        second_lidar:
-          topic: /second_lidar_obstacle_cloud
-          data_type: PointCloud2
-          marking: true
-          clearing: false
-          obstacle_min_range: 0.25
-          obstacle_max_range: 3.00
-          raytrace_min_range: 0.25
-          raytrace_max_range: 3.00
-          min_obstacle_height: 0.15
-          max_obstacle_height: 1.10
-          inf_is_valid: false
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer"
         cost_scaling_factor: 4.0
@@ -545,17 +528,29 @@ behavior_server:
     local_footprint_topic: local_costmap/published_footprint
     global_footprint_topic: global_costmap/published_footprint
     cycle_frequency: 10.0
-    behavior_plugins: ["wait"]
+    behavior_plugins: ["spin", "backup", "drive_on_heading", "assisted_teleop", "wait"]
+    spin:
+      plugin: "nav2_behaviors/Spin"
+    backup:
+      plugin: "pb_nav2_behaviors/BackUpFreeSpace"
+    drive_on_heading:
+      plugin: "nav2_behaviors/DriveOnHeading"
     wait:
       plugin: "nav2_behaviors/Wait"
+    assisted_teleop:
+      plugin: "nav2_behaviors/AssistedTeleop"
     local_frame: odom
     global_frame: map
     robot_base_frame: gimbal_yaw_fake
     transform_tolerance: 0.1
     simulate_ahead_time: 2.0
-    max_rotational_vel: 0.4
-    min_rotational_vel: 0.0
-    rotational_acc_lim: 1.0
+    max_rotational_vel: 1.0
+    min_rotational_vel: 0.4
+    rotational_acc_lim: 3.2
+    # params for pb_nav2_behaviors/BackUpFreeSpace
+    service_name: "global_costmap/get_costmap"
+    max_radius: 2.0
+    visualize: false
 
 waypoint_follower:
   ros__parameters:
@@ -574,14 +569,14 @@ velocity_smoother:
     smoothing_frequency: 20.0
     scale_velocities: False
     feedback: "OPEN_LOOP"
-    max_velocity: [2.0, 2.0, 0.0]
-    min_velocity: [-2.0, -2.0, 0.0]
-    max_accel: [2.5, 2.5, 0.0]
-    max_decel: [-3.0, -3.0, 0.0]
+    max_velocity: [2.5, 2.5, 0.5]
+    min_velocity: [-2.5, -2.5, -0.5]
+    max_accel: [4.5, 4.5, 1.0]
+    max_decel: [-4.5, -4.5, -1.0]
     odom_topic: "odometry"
     odom_duration: 0.1
     deadband_velocity: [0.0, 0.0, 0.0]
-    velocity_timeout: 0.25
+    velocity_timeout: 1.0
 
 pb_teleop_twist_joy_node:
   ros__parameters:

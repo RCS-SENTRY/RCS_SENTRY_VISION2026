@@ -45,11 +45,18 @@ def _or(*parts):
 
 def _validate_paths(context, *args, **kwargs):
     slam = LaunchConfiguration("slam").perform(context).lower() in ("true", "1", "yes")
+    second_lidar_safety = (
+        LaunchConfiguration("enable_second_lidar_safety").perform(context).lower()
+        in ("true", "1", "yes")
+    )
     map_yaml = LaunchConfiguration("map").perform(context)
     params_file = LaunchConfiguration("params_file").perform(context)
+    dual_lidar_config = LaunchConfiguration("dual_lidar_user_config_path").perform(context)
 
     if not os.path.exists(params_file):
         raise RuntimeError(f"PB2025 XMU params file not found: {params_file}")
+    if second_lidar_safety and not os.path.exists(dual_lidar_config):
+        raise RuntimeError(f"Dual MID-360 config file not found: {dual_lidar_config}")
     if not slam:
         if not map_yaml:
             raise RuntimeError("slam:=False requires map:=/absolute/path/to/map.yaml")
@@ -58,20 +65,17 @@ def _validate_paths(context, *args, **kwargs):
     return []
 
 
-def _navigation_env():
-    library_paths = [
+def _without_mvs_libraries():
+    """Keep Hik MVS available globally, but keep Point-LIO on system libusb."""
+    return ":".join(
         path
         for path in os.environ.get("LD_LIBRARY_PATH", "").split(":")
         if path and not path.startswith("/opt/MVS")
-    ]
-    return {
-        "LD_LIBRARY_PATH": ":".join(library_paths),
-    }
+    )
 
 
 def generate_launch_description():
     bringup_dir = get_package_share_directory("rm_bringup")
-    navigation_env = _navigation_env()
 
     namespace = LaunchConfiguration("namespace")
     slam = LaunchConfiguration("slam")
@@ -90,7 +94,6 @@ def generate_launch_description():
             param_rewrites={
                 "use_sim_time": use_sim_time,
                 "yaml_filename": map_yaml_file,
-                "local_costmap.local_costmap.ros__parameters.second_lidar_obstacle_layer.enabled": LaunchConfiguration("enable_second_lidar_costmap"),
             },
             convert_types=True,
         ),
@@ -106,18 +109,17 @@ def generate_launch_description():
     )
     cmd_bridge_enabled = _is_true("enable_cmd_bridge")
     rviz_enabled = _is_true("use_rviz")
-    second_lidar_enabled = _is_true("enable_second_lidar")
-    second_lidar_filter_enabled = _and(
-        second_lidar_enabled, _is_true("enable_second_lidar_filter")
-    )
-    second_lidar_safety_enabled = _and(
-        second_lidar_enabled, _is_true("enable_second_lidar_safety_limiter")
-    )
-    cmd_bridge_safe_enabled = _and(cmd_bridge_enabled, second_lidar_safety_enabled)
-    cmd_bridge_direct_enabled = _and(
-        cmd_bridge_enabled,
-        _or(_is_false("enable_second_lidar"), _is_false("enable_second_lidar_safety_limiter")),
-    )
+    second_lidar_safety_enabled = _is_true("enable_second_lidar_safety")
+    second_lidar_safety_disabled = _is_false("enable_second_lidar_safety")
+    bridge_cmd_vel_input_topic = PythonExpression([
+        "'",
+        LaunchConfiguration("cmd_vel_safe_topic"),
+        "' if '",
+        LaunchConfiguration("enable_second_lidar_safety"),
+        "'.lower() in ['true', '1', 'yes'] else '",
+        LaunchConfiguration("cmd_vel_input_topic"),
+        "'",
+    ])
 
     return LaunchDescription([
         SetEnvironmentVariable("RCUTILS_LOGGING_BUFFERED_STREAM", "1"),
@@ -146,21 +148,7 @@ def generate_launch_description():
         DeclareLaunchArgument("cmd_vel_timeout_sec", default_value="0.25"),
         DeclareLaunchArgument("goal_reached_latch_sec", default_value="1.0"),
         DeclareLaunchArgument("force_zero_angular_z", default_value="true"),
-        DeclareLaunchArgument("enable_heading_align", default_value="false"),
-        DeclareLaunchArgument("heading_align_only_when_force_zero_angular_z", default_value="true"),
-        DeclareLaunchArgument("heading_align_min_speed", default_value="0.15"),
-        DeclareLaunchArgument("heading_align_kp", default_value="1.2"),
-        DeclareLaunchArgument("heading_align_max_wz", default_value="0.5"),
-        DeclareLaunchArgument("heading_align_deadband_rad", default_value="0.08"),
-        DeclareLaunchArgument("disable_heading_align_when_reached", default_value="true"),
         DeclareLaunchArgument("invert_linear_y", default_value="false"),
-        DeclareLaunchArgument("max_linear_x", default_value="2.0"),
-        DeclareLaunchArgument("max_linear_y", default_value="2.0"),
-        DeclareLaunchArgument("max_linear_speed", default_value="2.0"),
-        DeclareLaunchArgument("max_angular_z", default_value="0.5"),
-        DeclareLaunchArgument("max_linear_accel", default_value="2.5"),
-        DeclareLaunchArgument("max_angular_accel", default_value="1.0"),
-        DeclareLaunchArgument("log_output_hz", default_value="1.0"),
         DeclareLaunchArgument("publish_livox_frame_alias", default_value="false"),
         DeclareLaunchArgument("lidar_x", default_value="0.0"),
         DeclareLaunchArgument("lidar_y", default_value="0.2"),
@@ -168,20 +156,27 @@ def generate_launch_description():
         DeclareLaunchArgument("lidar_roll", default_value="0.0"),
         DeclareLaunchArgument("lidar_pitch", default_value="0.3115"),
         DeclareLaunchArgument("lidar_yaw", default_value="1.5708"),
-        DeclareLaunchArgument("enable_second_lidar", default_value="false"),
-        DeclareLaunchArgument("enable_second_lidar_filter", default_value="true"),
-        DeclareLaunchArgument("enable_second_lidar_costmap", default_value="false"),
-        DeclareLaunchArgument("enable_second_lidar_safety_limiter", default_value="true"),
+        DeclareLaunchArgument("enable_second_lidar_safety", default_value="false"),
+        DeclareLaunchArgument("second_lidar_frame", default_value="second_mid360"),
         DeclareLaunchArgument("second_lidar_x", default_value="0.0"),
         DeclareLaunchArgument("second_lidar_y", default_value="-0.2"),
         DeclareLaunchArgument("second_lidar_z", default_value="0.35"),
         DeclareLaunchArgument("second_lidar_roll", default_value="0.0"),
         DeclareLaunchArgument("second_lidar_pitch", default_value="0.3115"),
         DeclareLaunchArgument("second_lidar_yaw", default_value="-1.5708"),
-        DeclareLaunchArgument("second_lidar_frame", default_value="second_mid360"),
         DeclareLaunchArgument("second_lidar_filter_target_frame", default_value="gimbal_yaw"),
-        DeclareLaunchArgument("second_lidar_safety_input_topic", default_value="/cmd_vel"),
-        DeclareLaunchArgument("second_lidar_safety_output_topic", default_value="/cmd_vel_safe"),
+        DeclareLaunchArgument(
+            "dual_lidar_user_config_path",
+            default_value=PathJoinSubstitution([
+                FindPackageShare("rm_bringup"),
+                "config",
+                "pb2025_xmu_dual_mid360_config.json",
+            ]),
+        ),
+        DeclareLaunchArgument("front_lidar_custom_topic", default_value="livox/lidar_192_168_1_173"),
+        DeclareLaunchArgument("front_imu_custom_topic", default_value="livox/imu_192_168_1_173"),
+        DeclareLaunchArgument("second_lidar_custom_topic", default_value="/livox/lidar_192_168_1_166"),
+        DeclareLaunchArgument("second_lidar_pointcloud_topic", default_value="/second_livox/lidar"),
 
         OpaqueFunction(function=_validate_paths),
 
@@ -190,7 +185,6 @@ def generate_launch_description():
             executable="static_transform_publisher",
             name="pb_base_footprint_to_base_link",
             output="screen",
-            additional_env=navigation_env,
             arguments=[
                 "--x", "0.0",
                 "--y", "0.0",
@@ -207,7 +201,6 @@ def generate_launch_description():
             executable="static_transform_publisher",
             name="pb_base_footprint_to_gimbal_yaw",
             output="screen",
-            additional_env=navigation_env,
             arguments=[
                 "--x", "0.0",
                 "--y", "0.0",
@@ -224,7 +217,6 @@ def generate_launch_description():
             executable="static_transform_publisher",
             name="pb_base_link_to_front_mid360",
             output="screen",
-            additional_env=navigation_env,
             arguments=[
                 "--x", LaunchConfiguration("lidar_x"),
                 "--y", LaunchConfiguration("lidar_y"),
@@ -242,7 +234,6 @@ def generate_launch_description():
             name="pb_front_mid360_to_livox_frame_alias",
             output="screen",
             condition=IfCondition(_is_true("publish_livox_frame_alias")),
-            additional_env=navigation_env,
             arguments=[
                 "--x", "0.0",
                 "--y", "0.0",
@@ -259,8 +250,7 @@ def generate_launch_description():
             executable="static_transform_publisher",
             name="pb_base_link_to_second_mid360",
             output="screen",
-            condition=IfCondition(second_lidar_enabled),
-            additional_env=navigation_env,
+            condition=IfCondition(second_lidar_safety_enabled),
             arguments=[
                 "--x", LaunchConfiguration("second_lidar_x"),
                 "--y", LaunchConfiguration("second_lidar_y"),
@@ -278,7 +268,6 @@ def generate_launch_description():
             name="pb_static_map_to_odom",
             output="screen",
             condition=IfCondition(static_map_to_odom_enabled),
-            additional_env=navigation_env,
             arguments=[
                 "--x", "0.0",
                 "--y", "0.0",
@@ -297,8 +286,7 @@ def generate_launch_description():
             name="livox_ros_driver2",
             output="screen",
             namespace=namespace,
-            condition=IfCondition(_is_false("enable_second_lidar")),
-            additional_env=navigation_env,
+            condition=IfCondition(second_lidar_safety_disabled),
             parameters=[configured_params],
             arguments=["--ros-args", "--log-level", log_level],
         ),
@@ -308,91 +296,19 @@ def generate_launch_description():
             name="livox_ros_driver2",
             output="screen",
             namespace=namespace,
-            condition=IfCondition(second_lidar_enabled),
-            additional_env=navigation_env,
-            parameters=[configured_params, {
-                "xfer_format": 1,
-                "multi_topic": 1,
-                "data_src": 0,
-                "publish_freq": 20.0,
-                "output_data_type": 0,
-                "frame_id": "front_mid360",
-                "user_config_path": os.path.join(
-                    bringup_dir, "config", "pb2025_xmu_dual_mid360_config.json"
-                ),
-                "cmdline_input_bd_code": "livox0000000001",
-                "lvx_file_path": "",
-            }],
-            remappings=[
-                ("livox/lidar_192_168_1_173", "/livox/lidar"),
-                ("livox/imu_192_168_1_173", "/livox/imu"),
-                ("livox/lidar_192_168_1_166", "/second_livox/custom_lidar"),
-                ("livox/imu_192_168_1_166", "/second_livox/imu"),
-            ],
-            arguments=["--ros-args", "--log-level", log_level],
-        ),
-        Node(
-            package="rm_bringup",
-            executable="livox_custom_to_pointcloud2.py",
-            name="front_livox_custom_to_pointcloud2",
-            output="screen",
-            condition=IfCondition(second_lidar_enabled),
-            additional_env=navigation_env,
-            parameters=[{
-                "input_topic": "/livox/lidar",
-                "output_topic": "/livox/lidar/pointcloud",
-                "frame_id": "front_mid360",
-                "use_sim_time": use_sim_time,
-            }],
-            arguments=["--ros-args", "--log-level", log_level],
-        ),
-        Node(
-            package="rm_bringup",
-            executable="livox_custom_to_pointcloud2.py",
-            name="second_livox_custom_to_pointcloud2",
-            output="screen",
-            condition=IfCondition(second_lidar_enabled),
-            additional_env=navigation_env,
-            parameters=[{
-                "input_topic": "/second_livox/custom_lidar",
-                "output_topic": "/second_livox/lidar",
-                "frame_id": LaunchConfiguration("second_lidar_frame"),
-                "use_sim_time": use_sim_time,
-            }],
-            arguments=["--ros-args", "--log-level", log_level],
-        ),
-        Node(
-            package="rm_bringup",
-            executable="second_lidar_obstacle_filter.py",
-            name="second_lidar_obstacle_filter",
-            output="screen",
-            condition=IfCondition(second_lidar_filter_enabled),
-            additional_env=navigation_env,
-            parameters=[{
-                "input_topic": "/second_livox/lidar",
-                "output_topic": "/second_lidar_obstacle_cloud",
-                "debug_topic": "/second_lidar_obstacle_debug",
-                "target_frame": LaunchConfiguration("second_lidar_filter_target_frame"),
-                "source_frame": LaunchConfiguration("second_lidar_frame"),
-                "use_sim_time": use_sim_time,
-            }],
-            arguments=["--ros-args", "--log-level", log_level],
-        ),
-        Node(
-            package="rm_bringup",
-            executable="second_lidar_safety_limiter_node",
-            name="second_lidar_safety_limiter",
-            output="screen",
             condition=IfCondition(second_lidar_safety_enabled),
-            additional_env=navigation_env,
-            parameters=[{
-                "input_cmd_vel_topic": LaunchConfiguration("second_lidar_safety_input_topic"),
-                "output_cmd_vel_topic": LaunchConfiguration("second_lidar_safety_output_topic"),
-                "obstacle_topic": "/second_lidar_obstacle_cloud",
-                "debug_topic": "/second_lidar_safety_debug",
-                "frame_id": LaunchConfiguration("second_lidar_filter_target_frame"),
-                "use_sim_time": use_sim_time,
-            }],
+            parameters=[
+                configured_params,
+                {
+                    # Dual-lidar mode must use CustomMsg multi-topic output. Point-LIO
+                    # subscribes only to the front MID-360 topic below.
+                    "xfer_format": 1,
+                    "multi_topic": 1,
+                    "output_data_type": 0,
+                    "frame_id": "front_mid360",
+                    "user_config_path": LaunchConfiguration("dual_lidar_user_config_path"),
+                },
+            ],
             arguments=["--ros-args", "--log-level", log_level],
         ),
         Node(
@@ -401,11 +317,32 @@ def generate_launch_description():
             name="point_lio",
             output="screen",
             namespace=namespace,
+            condition=IfCondition(second_lidar_safety_disabled),
+            additional_env={"LD_LIBRARY_PATH": _without_mvs_libraries()},
             respawn=use_respawn,
             respawn_delay=2.0,
-            additional_env=navigation_env,
             parameters=[
                 configured_params,
+                {"prior_pcd.prior_pcd_map_path": prior_pcd_file},
+                {"prior_pcd.enable": LaunchConfiguration("enable_prior_pcd")},
+                {"pcd_save.pcd_save_en": slam},
+            ],
+            arguments=["--ros-args", "--log-level", log_level],
+        ),
+        Node(
+            package="point_lio",
+            executable="pointlio_mapping",
+            name="point_lio",
+            output="screen",
+            namespace=namespace,
+            condition=IfCondition(second_lidar_safety_enabled),
+            additional_env={"LD_LIBRARY_PATH": _without_mvs_libraries()},
+            respawn=use_respawn,
+            respawn_delay=2.0,
+            parameters=[
+                configured_params,
+                {"common.lid_topic": LaunchConfiguration("front_lidar_custom_topic")},
+                {"common.imu_topic": LaunchConfiguration("front_imu_custom_topic")},
                 {"prior_pcd.prior_pcd_map_path": prior_pcd_file},
                 {"prior_pcd.enable": LaunchConfiguration("enable_prior_pcd")},
                 {"pcd_save.pcd_save_en": slam},
@@ -422,7 +359,6 @@ def generate_launch_description():
             condition=IfCondition(no_slam),
             respawn=use_respawn,
             respawn_delay=2.0,
-            additional_env=navigation_env,
             parameters=[configured_params],
             arguments=["--ros-args", "--log-level", log_level],
         ),
@@ -435,7 +371,6 @@ def generate_launch_description():
             condition=IfCondition(small_gicp_enabled),
             respawn=use_respawn,
             respawn_delay=2.0,
-            additional_env=navigation_env,
             parameters=[configured_params, {"prior_pcd_file": prior_pcd_file}],
             arguments=["--ros-args", "--log-level", log_level],
         ),
@@ -446,7 +381,6 @@ def generate_launch_description():
             output="screen",
             namespace=namespace,
             condition=IfCondition(no_slam),
-            additional_env=navigation_env,
             parameters=[
                 {"use_sim_time": use_sim_time},
                 {"autostart": autostart},
@@ -464,7 +398,6 @@ def generate_launch_description():
             condition=IfCondition(use_slam),
             respawn=use_respawn,
             respawn_delay=2.0,
-            additional_env=navigation_env,
             parameters=[configured_params],
             arguments=["--ros-args", "--log-level", log_level],
         ),
@@ -475,7 +408,6 @@ def generate_launch_description():
             output="screen",
             namespace=namespace,
             condition=IfCondition(use_slam),
-            additional_env=navigation_env,
             parameters=[
                 {"use_sim_time": use_sim_time},
                 {"autostart": autostart},
@@ -492,7 +424,6 @@ def generate_launch_description():
             condition=IfCondition(use_slam),
             respawn=use_respawn,
             respawn_delay=2.0,
-            additional_env=navigation_env,
             parameters=[configured_params],
             remappings=[("cloud_in", "terrain_map_ext"), ("scan", "obstacle_scan")],
             arguments=["--ros-args", "--log-level", log_level],
@@ -506,7 +437,6 @@ def generate_launch_description():
             condition=IfCondition(use_slam),
             respawn=use_respawn,
             respawn_delay=2.0,
-            additional_env=navigation_env,
             parameters=[configured_params],
             remappings=[("/map", "map"), ("/map_metadata", "map_metadata"), ("/map_updates", "map_updates")],
             arguments=["--ros-args", "--log-level", log_level],
@@ -520,7 +450,6 @@ def generate_launch_description():
             namespace=namespace,
             respawn=use_respawn,
             respawn_delay=2.0,
-            additional_env=navigation_env,
             parameters=[configured_params],
             arguments=["--ros-args", "--log-level", log_level],
         ),
@@ -532,7 +461,6 @@ def generate_launch_description():
             namespace=namespace,
             respawn=use_respawn,
             respawn_delay=2.0,
-            additional_env=navigation_env,
             parameters=[configured_params],
             arguments=["--ros-args", "--log-level", log_level],
         ),
@@ -544,7 +472,6 @@ def generate_launch_description():
             namespace=namespace,
             respawn=use_respawn,
             respawn_delay=2.0,
-            additional_env=navigation_env,
             parameters=[configured_params],
             arguments=["--ros-args", "--log-level", log_level],
         ),
@@ -556,7 +483,6 @@ def generate_launch_description():
             namespace=namespace,
             respawn=use_respawn,
             respawn_delay=2.0,
-            additional_env=navigation_env,
             parameters=[configured_params],
             arguments=["--ros-args", "--log-level", log_level],
         ),
@@ -568,8 +494,54 @@ def generate_launch_description():
             namespace=namespace,
             respawn=use_respawn,
             respawn_delay=2.0,
-            additional_env=navigation_env,
             parameters=[configured_params],
+            arguments=["--ros-args", "--log-level", log_level],
+        ),
+        Node(
+            package="rm_bringup",
+            executable="livox_custom_to_pointcloud2.py",
+            name="second_livox_custom_to_pointcloud2",
+            output="screen",
+            condition=IfCondition(second_lidar_safety_enabled),
+            parameters=[{
+                "input_topic": LaunchConfiguration("second_lidar_custom_topic"),
+                "output_topic": LaunchConfiguration("second_lidar_pointcloud_topic"),
+                "output_frame": LaunchConfiguration("second_lidar_frame"),
+                "use_sim_time": use_sim_time,
+            }],
+            arguments=["--ros-args", "--log-level", log_level],
+        ),
+        Node(
+            package="rm_bringup",
+            executable="second_lidar_obstacle_filter.py",
+            name="second_lidar_obstacle_filter",
+            output="screen",
+            condition=IfCondition(second_lidar_safety_enabled),
+            parameters=[{
+                "input_topic": LaunchConfiguration("second_lidar_pointcloud_topic"),
+                "output_topic": "/second_lidar_obstacle_cloud",
+                "debug_topic": "/second_lidar_obstacle_debug",
+                "target_frame": LaunchConfiguration("second_lidar_filter_target_frame"),
+                "source_frame": LaunchConfiguration("second_lidar_frame"),
+                "use_sim_time": use_sim_time,
+            }],
+            arguments=["--ros-args", "--log-level", log_level],
+        ),
+        Node(
+            package="rm_bringup",
+            executable="second_lidar_safety_limiter_node",
+            name="second_lidar_safety_limiter",
+            output="screen",
+            condition=IfCondition(second_lidar_safety_enabled),
+            parameters=[{
+                "input_cmd_vel_topic": LaunchConfiguration("cmd_vel_input_topic"),
+                "output_cmd_vel_topic": LaunchConfiguration("cmd_vel_safe_topic"),
+                "obstacle_topic": "/second_lidar_obstacle_cloud",
+                "debug_topic": "/second_lidar_safety_debug",
+                "publish_rate_hz": LaunchConfiguration("publish_rate_hz"),
+                "cmd_vel_timeout_sec": LaunchConfiguration("cmd_vel_timeout_sec"),
+                "use_sim_time": use_sim_time,
+            }],
             arguments=["--ros-args", "--log-level", log_level],
         ),
 
@@ -581,7 +553,6 @@ def generate_launch_description():
             namespace=namespace,
             respawn=use_respawn,
             respawn_delay=2.0,
-            additional_env=navigation_env,
             parameters=[configured_params],
             remappings=[("cmd_vel", "cmd_vel_controller")],
             arguments=["--ros-args", "--log-level", log_level],
@@ -594,7 +565,6 @@ def generate_launch_description():
             namespace=namespace,
             respawn=use_respawn,
             respawn_delay=2.0,
-            additional_env=navigation_env,
             parameters=[configured_params],
             arguments=["--ros-args", "--log-level", log_level],
         ),
@@ -606,7 +576,6 @@ def generate_launch_description():
             namespace=namespace,
             respawn=use_respawn,
             respawn_delay=2.0,
-            additional_env=navigation_env,
             parameters=[configured_params],
             arguments=["--ros-args", "--log-level", log_level],
         ),
@@ -618,7 +587,6 @@ def generate_launch_description():
             namespace=namespace,
             respawn=use_respawn,
             respawn_delay=2.0,
-            additional_env=navigation_env,
             parameters=[configured_params],
             arguments=["--ros-args", "--log-level", log_level],
         ),
@@ -630,7 +598,6 @@ def generate_launch_description():
             namespace=namespace,
             respawn=use_respawn,
             respawn_delay=2.0,
-            additional_env=navigation_env,
             parameters=[configured_params],
             arguments=["--ros-args", "--log-level", log_level],
         ),
@@ -642,7 +609,6 @@ def generate_launch_description():
             namespace=namespace,
             respawn=use_respawn,
             respawn_delay=2.0,
-            additional_env=navigation_env,
             parameters=[configured_params],
             arguments=["--ros-args", "--log-level", log_level],
         ),
@@ -654,7 +620,6 @@ def generate_launch_description():
             namespace=namespace,
             respawn=use_respawn,
             respawn_delay=2.0,
-            additional_env=navigation_env,
             parameters=[configured_params],
             remappings=[
                 ("cmd_vel", "cmd_vel_controller"),
@@ -668,7 +633,6 @@ def generate_launch_description():
             name="lifecycle_manager_navigation",
             output="screen",
             namespace=namespace,
-            additional_env=navigation_env,
             parameters=[
                 {"use_sim_time": use_sim_time},
                 {"autostart": autostart},
@@ -692,63 +656,15 @@ def generate_launch_description():
             executable="pb_cmd_vel_to_nav_cmd.py",
             name="pb_cmd_vel_to_nav_cmd",
             output="screen",
-            condition=IfCondition(cmd_bridge_safe_enabled),
-            additional_env=navigation_env,
+            condition=IfCondition(cmd_bridge_enabled),
             parameters=[{
-                "input_topic": LaunchConfiguration("cmd_vel_safe_topic"),
+                "input_topic": bridge_cmd_vel_input_topic,
                 "output_topic": LaunchConfiguration("nav_cmd_output_topic"),
                 "cmd_vel_timeout_sec": LaunchConfiguration("cmd_vel_timeout_sec"),
                 "publish_rate_hz": LaunchConfiguration("publish_rate_hz"),
                 "goal_reached_latch_sec": LaunchConfiguration("goal_reached_latch_sec"),
                 "force_zero_angular_z": LaunchConfiguration("force_zero_angular_z"),
-                "enable_heading_align": LaunchConfiguration("enable_heading_align"),
-                "heading_align_only_when_force_zero_angular_z": LaunchConfiguration("heading_align_only_when_force_zero_angular_z"),
-                "heading_align_min_speed": LaunchConfiguration("heading_align_min_speed"),
-                "heading_align_kp": LaunchConfiguration("heading_align_kp"),
-                "heading_align_max_wz": LaunchConfiguration("heading_align_max_wz"),
-                "heading_align_deadband_rad": LaunchConfiguration("heading_align_deadband_rad"),
-                "disable_heading_align_when_reached": LaunchConfiguration("disable_heading_align_when_reached"),
                 "invert_linear_y": LaunchConfiguration("invert_linear_y"),
-                "max_linear_x": LaunchConfiguration("max_linear_x"),
-                "max_linear_y": LaunchConfiguration("max_linear_y"),
-                "max_linear_speed": LaunchConfiguration("max_linear_speed"),
-                "max_angular_z": LaunchConfiguration("max_angular_z"),
-                "max_linear_accel": LaunchConfiguration("max_linear_accel"),
-                "max_angular_accel": LaunchConfiguration("max_angular_accel"),
-                "log_output_hz": LaunchConfiguration("log_output_hz"),
-                "use_sim_time": use_sim_time,
-            }],
-            arguments=["--ros-args", "--log-level", log_level],
-        ),
-        Node(
-            package="rm_bringup",
-            executable="pb_cmd_vel_to_nav_cmd.py",
-            name="pb_cmd_vel_to_nav_cmd",
-            output="screen",
-            condition=IfCondition(cmd_bridge_direct_enabled),
-            additional_env=navigation_env,
-            parameters=[{
-                "input_topic": LaunchConfiguration("cmd_vel_input_topic"),
-                "output_topic": LaunchConfiguration("nav_cmd_output_topic"),
-                "cmd_vel_timeout_sec": LaunchConfiguration("cmd_vel_timeout_sec"),
-                "publish_rate_hz": LaunchConfiguration("publish_rate_hz"),
-                "goal_reached_latch_sec": LaunchConfiguration("goal_reached_latch_sec"),
-                "force_zero_angular_z": LaunchConfiguration("force_zero_angular_z"),
-                "enable_heading_align": LaunchConfiguration("enable_heading_align"),
-                "heading_align_only_when_force_zero_angular_z": LaunchConfiguration("heading_align_only_when_force_zero_angular_z"),
-                "heading_align_min_speed": LaunchConfiguration("heading_align_min_speed"),
-                "heading_align_kp": LaunchConfiguration("heading_align_kp"),
-                "heading_align_max_wz": LaunchConfiguration("heading_align_max_wz"),
-                "heading_align_deadband_rad": LaunchConfiguration("heading_align_deadband_rad"),
-                "disable_heading_align_when_reached": LaunchConfiguration("disable_heading_align_when_reached"),
-                "invert_linear_y": LaunchConfiguration("invert_linear_y"),
-                "max_linear_x": LaunchConfiguration("max_linear_x"),
-                "max_linear_y": LaunchConfiguration("max_linear_y"),
-                "max_linear_speed": LaunchConfiguration("max_linear_speed"),
-                "max_angular_z": LaunchConfiguration("max_angular_z"),
-                "max_linear_accel": LaunchConfiguration("max_linear_accel"),
-                "max_angular_accel": LaunchConfiguration("max_angular_accel"),
-                "log_output_hz": LaunchConfiguration("log_output_hz"),
                 "use_sim_time": use_sim_time,
             }],
             arguments=["--ros-args", "--log-level", log_level],
@@ -759,7 +675,6 @@ def generate_launch_description():
             name="pb2025_nav_rviz",
             output="screen",
             condition=IfCondition(rviz_enabled),
-            additional_env=navigation_env,
             arguments=[
                 "-d",
                 PathJoinSubstitution([

@@ -13,13 +13,13 @@ source install/setup.bash
 
 ### 1.1 Check serial device
 ```bash
-ls /dev/ttyUSB* /dev/ttyACM*
-# Expected: /dev/ttyUSB0 (or similar)
+ls -l /dev/rm_serial /dev/serial/by-id/ /dev/ttyUSB* /dev/ttyACM*
+# Expected: /dev/rm_serial -> /dev/ttyUSBx
 ```
 
 ### 1.2 Fix permissions
 ```bash
-sudo chmod 666 /dev/ttyUSB0
+sudo chmod 666 /dev/rm_serial
 # OR permanent: sudo usermod -aG dialout $USER  (then re-login)
 ```
 
@@ -30,13 +30,13 @@ Default: 460800 bps. Check Control_STM/STM32F405/usart.cpp for STM32 config.
 ```bash
 source install/setup.bash
 ros2 run rm_hw_bridge hw_bridge_node --ros-args \
-  -p serial_device:=/dev/ttyUSB0 \
+  -p serial_device:=/dev/rm_serial \
   -p baudrate:=460800 \
   -p require_crc_check:=false
 ```
 Expected output:
 ```
-[rm_hw_bridge] Opening serial: /dev/ttyUSB0 @ 460800 bps
+[rm_hw_bridge] Opening serial: /dev/rm_serial @ 460800 bps
 [rm_hw_bridge] rm_hw_bridge node initialized (timer-driven publish @ 1kHz).
 ```
 
@@ -83,7 +83,7 @@ After both serial and camera verified:
 source install/setup.bash
 ros2 launch rm_bringup sentry_bringup.launch.py \
   use_serial:=true \
-  serial_device:=/dev/ttyUSB0 \
+  serial_device:=/dev/rm_serial \
   baudrate:=460800 \
   target_color:=red \
   publish_debug_image:=true
@@ -151,10 +151,10 @@ cd ~/Desktop/SENTRY_FULL/XMU_RCS_SENTRY && \
 source /opt/ros/humble/setup.bash && colcon build --symlink-install && source install/setup.bash
 
 # Serial only
-ros2 run rm_hw_bridge hw_bridge_node --ros-args -p serial_device:=/dev/ttyUSB0 -p require_crc_check:=false
+ros2 run rm_hw_bridge hw_bridge_node --ros-args -p serial_device:=/dev/rm_serial -p require_crc_check:=false
 
 # Full bringup
-ros2 launch rm_bringup sentry_bringup.launch.py use_serial:=true serial_device:=/dev/ttyUSB0 target_color:=red publish_debug_image:=true
+ros2 launch rm_bringup sentry_bringup.launch.py use_serial:=true serial_device:=/dev/rm_serial target_color:=red publish_debug_image:=true
 
 # Record
 mkdir -p ~/bag2 && cd ~/bag2 && ros2 bag record -o autoaim_$(date +%Y%m%d_%H%M%S) /detector/armors /autoaim/debug_world_points /gimbal_status /imu/data /joint_states /tf

@@ -2,16 +2,17 @@ cmake_minimum_required(VERSION 3.10)
 project(rm_bringup)
 
 find_package(ament_cmake REQUIRED)
-find_package(geometry_msgs REQUIRED)
 find_package(rclcpp REQUIRED)
+find_package(geometry_msgs REQUIRED)
 find_package(sensor_msgs REQUIRED)
 find_package(std_msgs REQUIRED)
 
-add_executable(second_lidar_safety_limiter_node src/second_lidar_safety_limiter_node.cpp)
-ament_target_dependencies(
-  second_lidar_safety_limiter_node
-  geometry_msgs
+add_executable(second_lidar_safety_limiter_node
+  src/second_lidar_safety_limiter_node.cpp
+)
+ament_target_dependencies(second_lidar_safety_limiter_node
   rclcpp
+  geometry_msgs
   sensor_msgs
   std_msgs
 )
@@ -28,7 +29,6 @@ install(PROGRAMS
   scripts/livox_custom_to_pointcloud2.py
   scripts/pb_cmd_vel_to_nav_cmd.py
   scripts/second_lidar_obstacle_filter.py
-  scripts/second_lidar_safety_limiter.py
   DESTINATION lib/${PROJECT_NAME}
 )
 
