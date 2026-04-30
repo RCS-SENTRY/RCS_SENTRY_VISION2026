@@ -380,7 +380,7 @@ def generate_launch_description():
         ),
         Node(
             package="rm_bringup",
-            executable="second_lidar_safety_limiter.py",
+            executable="second_lidar_safety_limiter_node",
             name="second_lidar_safety_limiter",
             output="screen",
             condition=IfCondition(second_lidar_safety_enabled),

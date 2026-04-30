@@ -11,7 +11,7 @@
 
   <exec_depend>action_msgs</exec_depend>
   <exec_depend>diagnostic_msgs</exec_depend>
-  <exec_depend>geometry_msgs</exec_depend>
+  <depend>geometry_msgs</depend>
   <exec_depend>launch</exec_depend>
   <exec_depend>launch_ros</exec_depend>
   <exec_depend>nav2_behaviors</exec_depend>
@@ -32,6 +32,7 @@
   <exec_depend>loam_interface</exec_depend>
   <exec_depend>point_lio</exec_depend>
   <exec_depend>pointcloud_to_laserscan</exec_depend>
+  <depend>rclcpp</depend>
   <exec_depend>rclpy</exec_depend>
   <exec_depend>rm_autoaim</exec_depend>
   <exec_depend>rm_hik_driver</exec_depend>
@@ -39,12 +40,12 @@
   <exec_depend>rm_interfaces</exec_depend>
   <exec_depend>rm_vision</exec_depend>
   <exec_depend>sensor_scan_generation</exec_depend>
-  <exec_depend>sensor_msgs</exec_depend>
+  <depend>sensor_msgs</depend>
   <exec_depend>sensor_msgs_py</exec_depend>
   <exec_depend>sentry_bt</exec_depend>
   <exec_depend>slam_toolbox</exec_depend>
   <exec_depend>small_gicp_relocalization</exec_depend>
-  <exec_depend>std_msgs</exec_depend>
+  <depend>std_msgs</depend>
   <exec_depend>terrain_analysis</exec_depend>
   <exec_depend>terrain_analysis_ext</exec_depend>
   <exec_depend>tf2_ros</exec_depend>
