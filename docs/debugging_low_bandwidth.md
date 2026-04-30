@@ -17,7 +17,7 @@ tmux new -s sentry
 ros2 launch rm_bringup sentry_bringup.launch.py \
   navigation_only:=true \
   use_serial:=true \
-  serial_device:=/dev/ttyUSB0 \
+  serial_device:=/dev/rm_serial \
   baudrate:=460800 \
   enable_navigation:=true \
   slam:=False \
@@ -55,3 +55,31 @@ ros2 bag record /tf /tf_static /odometry /terrain_map /terrain_map_ext /cmd_vel 
 ```
 
 离线分析时再打开 RViz 和点云显示，不把渲染压力放在机器人端。
+
+## 坡道调试
+
+坡道问题先录完整链路，离线判断是 `/terrain_map` 已经把坡道打坏，还是 costmap layer 解释有问题：
+
+```bash
+ros2 bag record /tf /tf_static /odometry /terrain_map /terrain_map_ext /local_costmap/costmap /global_costmap/costmap
+```
+
+如果仍把缓坡大量识别为障碍，再小步尝试：
+
+```yaml
+terrain_analysis:
+  quantileZ: 0.30
+  maxRelZ: 0.70
+  disRatioZ: 0.30
+
+terrain_analysis_ext:
+  quantileZ: 0.30
+  upperBoundZ: 0.70
+  disRatioZ: 0.30
+```
+
+启用第二雷达后如果坡道误判加重，先关闭 `enable_second_lidar_obstacle` 做对照；确认是第二雷达 obstacle layer 后，再提高第二雷达 `min_obstacle_height` 到 `0.15` 或缩小 `max_range`。
+
+## RViz OpenGL
+
+机器人端 RViz 报 `active samplers with a different type refer to the same texture image unit` 时，通常是远程桌面、显卡驱动和 RViz GLSL 的组合问题。优先保持 `use_rviz:=false`，本地电脑同网段打开 RViz；必要时再尝试升级显卡驱动或切换软件渲染做排查。

@@ -10,6 +10,7 @@
   <buildtool_depend>ament_cmake</buildtool_depend>
 
   <exec_depend>action_msgs</exec_depend>
+  <exec_depend>diagnostic_msgs</exec_depend>
   <exec_depend>geometry_msgs</exec_depend>
   <exec_depend>launch</exec_depend>
   <exec_depend>launch_ros</exec_depend>
@@ -38,9 +39,12 @@
   <exec_depend>rm_interfaces</exec_depend>
   <exec_depend>rm_vision</exec_depend>
   <exec_depend>sensor_scan_generation</exec_depend>
+  <exec_depend>sensor_msgs</exec_depend>
+  <exec_depend>sensor_msgs_py</exec_depend>
   <exec_depend>sentry_bt</exec_depend>
   <exec_depend>slam_toolbox</exec_depend>
   <exec_depend>small_gicp_relocalization</exec_depend>
+  <exec_depend>std_msgs</exec_depend>
   <exec_depend>terrain_analysis</exec_depend>
   <exec_depend>terrain_analysis_ext</exec_depend>
   <exec_depend>tf2_ros</exec_depend>

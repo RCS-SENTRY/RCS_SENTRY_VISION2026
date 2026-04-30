@@ -72,7 +72,7 @@ source install/setup.bash
 ```bash
 ros2 launch rm_bringup sentry_bringup.launch.py \
   use_serial:=true \
-  serial_device:=/dev/ttyUSB0 \
+  serial_device:=/dev/rm_serial \
   baudrate:=460800 \
   enable_navigation:=true \
   navigation_only:=false \
@@ -88,7 +88,7 @@ ros2 launch rm_bringup sentry_bringup.launch.py \
 ros2 launch rm_bringup sentry_bringup.launch.py \
   navigation_only:=true \
   use_serial:=true \
-  serial_device:=/dev/ttyUSB0 \
+  serial_device:=/dev/rm_serial \
   baudrate:=460800 \
   enable_navigation:=true \
   slam:=False \
@@ -103,7 +103,7 @@ ros2 launch rm_bringup sentry_bringup.launch.py \
 ros2 launch rm_bringup sentry_bringup.launch.py \
   vision_only:=true \
   use_serial:=true \
-  serial_device:=/dev/ttyUSB0 \
+  serial_device:=/dev/rm_serial \
   baudrate:=460800
 ```
 
@@ -123,7 +123,7 @@ ros2 launch rm_bringup sentry_bringup.launch.py \
 | 参数 | 默认值 | 说明 |
 | --- | --- | --- |
 | `use_serial` | `true` | 启动 `rm_hw_bridge` |
-| `serial_device` | `/dev/ttyUSB0` | 串口设备 |
+| `serial_device` | `/dev/rm_serial` | 串口设备，长期使用 udev 固定别名或 `/dev/serial/by-id/...` |
 | `baudrate` | `460800` | 串口波特率 |
 | `navigation_only` | `false` | 通信 + PB2025 导航，不启动相机/自瞄 |
 | `vision_only` | `false` | 通信 + 相机/视觉/自瞄，不启动导航 |
@@ -134,12 +134,27 @@ ros2 launch rm_bringup sentry_bringup.launch.py \
 | `slam` | `False` | `False` 使用已有地图，`True` 进入 PB SLAM 模式 |
 | `map` | `/home/rm/Desktop/SENTRY_FULL/maps/self_filtered_map.yaml` | Nav2 栅格地图 |
 | `prior_pcd_file` | `/home/rm/Desktop/SENTRY_FULL/maps/self_filtered_scans.pcd` | 可选 PCD 先验 |
+| `max_linear_speed` | `2.0` | PB-to-NavCmd bridge 最终合速度限幅 |
+| `max_linear_accel` | `2.5` | PB-to-NavCmd bridge 线加速度限幅 |
+| `cmd_vel_timeout_sec` | `0.25` | `/cmd_vel` 超时后持续发布零速 `/nav_cmd` |
+| `force_zero_angular_z` | `true` | 默认屏蔽 PB `/cmd_vel.angular.z` |
+| `enable_heading_align` | `false` | 预留 heading align 能力，默认关闭 |
+| `enable_second_lidar_obstacle` | `false` | 第二 MID-360 只做近场避障补盲，默认关闭 |
+
+默认行为树不执行 `BackUp` / `Spin` / `DriveOnHeading` 这类移动 recovery。默认 `force_zero_angular_z:=true` 且 `enable_heading_align:=false`；比赛前若要打开角速度，必须单独测试 `angular_z` 的方向和幅值。到点成功时 bridge 会在 `goal_reached_latch_sec` 时间内发布零速且 `is_reached=1` 的 `/nav_cmd`。
 
 XMU MID-360 外参默认值：
 
 ```text
 lidar_x=0.0, lidar_y=0.2, lidar_z=0.35
 lidar_roll=0.0, lidar_pitch=0.3115, lidar_yaw=1.5708
+```
+
+第二 MID-360 默认关于车体 x 轴镜像，只用于 local obstacle：
+
+```text
+second_lidar_x=0.0, second_lidar_y=-0.2, second_lidar_z=0.35
+second_lidar_roll=0.0, second_lidar_pitch=0.3115, second_lidar_yaw=-1.5708
 ```
 
 XMU 车体尺寸：
@@ -153,6 +168,26 @@ length=0.50, width=0.50, height=0.55
 - `map` 指向 Nav2 使用的 `.yaml` 栅格地图。
 - `prior_pcd_file` 指向 PB 点云先验，只有启用对应功能时才使用。
 - 默认 `enable_small_gicp:=false`，低负载实车验证先跑 PB odom、terrain map、Nav2 与 `/nav_cmd` 闭环。
+- 当前仍是单雷达定位：`front_mid360` 参与 Point-LIO；第二雷达不参与 Point-LIO、不参与建图、不参与 small_gicp。
+- 坡道若仍被识别为障碍，先录包判断是 `/terrain_map` 错，还是 costmap 解释错；可小步尝试 `quantileZ: 0.30`、`maxRelZ/upperBoundZ: 0.70`、`disRatioZ: 0.30`。
+
+第二雷达避障测试：
+
+```bash
+ros2 launch rm_bringup sentry_bringup.launch.py \
+  navigation_only:=true \
+  use_serial:=true \
+  serial_device:=/dev/rm_serial \
+  baudrate:=460800 \
+  enable_navigation:=true \
+  slam:=False \
+  map:=/home/rm/Desktop/SENTRY_FULL/maps/self_filtered_map.yaml \
+  enable_small_gicp:=false \
+  enable_second_lidar_obstacle:=true \
+  use_rviz:=false
+```
+
+启用第二雷达前，需要按实车填写 `src/rm_bringup/config/pb2025_xmu_second_mid360_config.json` 中的第二雷达 IP / broadcast code / host IP。若启用后坡道误判加重，先关闭 `enable_second_lidar_obstacle` 做对照，再考虑把第二雷达 `min_obstacle_height` 提高到 `0.15` 或缩小作用范围。
 
 ## 常用调试
 
@@ -167,9 +202,31 @@ ros2 topic echo /cmd_vel
 ros2 topic echo /nav_cmd
 ros2 run tf2_ros tf2_echo map odom
 ros2 run tf2_ros tf2_echo odom base_footprint
+ros2 run tf2_ros tf2_echo base_link second_mid360
+ros2 topic list | grep second
+ros2 topic hz /second_livox/lidar
+ros2 topic hz /second_lidar_obstacle_cloud
+ros2 topic echo /second_lidar_obstacle_debug
 ros2 topic echo /local_costmap/costmap --once
 ros2 topic echo /global_costmap/costmap --once
 ```
+
+到点检查：
+
+```bash
+ros2 action send_goal /navigate_to_pose nav2_msgs/action/NavigateToPose "{
+  pose: {
+    header: {frame_id: 'map'},
+    pose: {
+      position: {x: 1.0, y: 0.0, z: 0.0},
+      orientation: {x: 0.0, y: 0.0, z: 0.0, w: 1.0}
+    }
+  }
+}"
+ros2 topic echo /nav_cmd
+```
+
+到点后应看到 `linear_x=0`、`linear_y=0`、`angular_z=0`、`is_reached=1`。
 
 ## 低负载调试建议
 
@@ -179,5 +236,6 @@ ros2 topic echo /global_costmap/costmap --once
 - RViz 只显示必要 topic。
 - 需要复盘时录 rosbag 离线分析。
 - 不推荐 ToDesk + RViz + 点云全开。
+- 机器人端 RViz 若出现 GLSL sampler/link error，优先关闭机器人端 RViz，改用本地电脑 RViz；这通常是远程桌面或显卡 OpenGL 驱动组合问题，不是导航链路本身。
 
-更多细节见 `docs/debugging_low_bandwidth.md`。
+更多细节见 `docs/debugging_low_bandwidth.md`，串口固定见 `docs/serial_device_binding.md`，双雷达上车测试见 `docs/dual_lidar_test_guide.md`。

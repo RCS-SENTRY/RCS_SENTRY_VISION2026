@@ -1,0 +1,7 @@
+# XMU sentry lower MCU serial binding.
+# Current detected lower MCU: /dev/ttyUSB0, CH340, USB physical port 3-8.
+# Install with:
+#   sudo cp docs/99-rm-serial.rules /etc/udev/rules.d/
+#   sudo udevadm control --reload-rules
+#   sudo udevadm trigger --action=add --subsystem-match=tty --sysname-match=ttyUSB0 --settle
+SUBSYSTEM=="tty", ENV{ID_PATH}=="pci-0000:00:14.0-usb-0:8:1.0", SYMLINK+="rm_serial", MODE="0666", GROUP="dialout"
