@@ -78,7 +78,7 @@ terrain_analysis_ext:
   disRatioZ: 0.30
 ```
 
-启用第二雷达后如果坡道误判加重，先关闭 `enable_second_lidar_obstacle` 做对照；确认是第二雷达 obstacle layer 后，再提高第二雷达 `min_obstacle_height` 到 `0.15` 或缩小 `max_range`。
+启用第二雷达后如果坡道误判加重，先确认 `enable_second_lidar_costmap:=false`，确保第二雷达未写入 local costmap；若确认是 second lidar debug costmap 造成，再提高第二雷达过滤节点 `min_height` 到 `0.15` 或缩小 `max_range`。
 
 ## RViz OpenGL
 

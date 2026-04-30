@@ -22,19 +22,19 @@ class SecondLidarObstacleFilter(Node):
         self.declare_parameter("input_topic", "/second_livox/lidar")
         self.declare_parameter("output_topic", "/second_lidar_obstacle_cloud")
         self.declare_parameter("debug_topic", "/second_lidar_obstacle_debug")
-        self.declare_parameter("target_frame", "base_footprint")
+        self.declare_parameter("target_frame", "gimbal_yaw")
         self.declare_parameter("source_frame", "second_mid360")
         self.declare_parameter("min_range", 0.20)
-        self.declare_parameter("max_range", 4.00)
-        self.declare_parameter("min_height", 0.10)
-        self.declare_parameter("max_height", 1.20)
-        self.declare_parameter("voxel_leaf_size", 0.08)
+        self.declare_parameter("max_range", 3.00)
+        self.declare_parameter("min_height", 0.15)
+        self.declare_parameter("max_height", 1.10)
+        self.declare_parameter("voxel_leaf_size", 0.10)
         self.declare_parameter("body_box_x_min", -0.30)
         self.declare_parameter("body_box_x_max", 0.30)
         self.declare_parameter("body_box_y_min", -0.30)
         self.declare_parameter("body_box_y_max", 0.30)
         self.declare_parameter("body_box_z_min", -0.10)
-        self.declare_parameter("body_box_z_max", 0.70)
+        self.declare_parameter("body_box_z_max", 0.75)
         self.declare_parameter("allow_latest_tf_fallback", False)
         self.declare_parameter("debug_log_period_sec", 1.0)
 
@@ -77,6 +77,12 @@ class SecondLidarObstacleFilter(Node):
         self.empty_after_filter_count = 0
         self.point_count_in = 0
         self.point_count_out = 0
+        self.last_source_frame = self.source_frame
+
+        if self.allow_latest_tf_fallback:
+            self.get_logger().warn(
+                "allow_latest_tf_fallback is ignored; stamped TF is required for obstacle cloud"
+            )
 
         self.get_logger().info(
             "Second lidar obstacle filter ready: %s -> %s, target_frame=%s"
@@ -87,12 +93,13 @@ class SecondLidarObstacleFilter(Node):
         self.received_cloud_count += 1
         source_frame = self.source_frame or msg.header.frame_id
         stamp = Time.from_msg(msg.header.stamp)
+        self.last_source_frame = source_frame
 
         try:
             transform = self.tf_buffer.lookup_transform(
                 self.target_frame,
                 source_frame,
-                Time() if self.allow_latest_tf_fallback else stamp,
+                stamp,
                 timeout=Duration(seconds=0.05),
             )
         except TransformException as exc:
@@ -161,6 +168,8 @@ class SecondLidarObstacleFilter(Node):
             self.kv("empty_after_filter_count", self.empty_after_filter_count),
             self.kv("point_count_in", self.point_count_in),
             self.kv("point_count_out", self.point_count_out),
+            self.kv("target_frame", self.target_frame),
+            self.kv("source_frame", self.last_source_frame),
         ]
         array.status.append(status)
         self.debug_pub.publish(array)

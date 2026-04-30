@@ -93,7 +93,7 @@ ros2 run tf2_ros tf2_echo odom base_footprint
 
 ## 第二雷达避障测试
 
-第二雷达只用于近场 obstacle cloud：
+第二雷达默认用于 safety limiter，不直接写入 local costmap：
 
 ```bash
 ros2 launch rm_bringup sentry_bringup.launch.py \
@@ -105,7 +105,10 @@ ros2 launch rm_bringup sentry_bringup.launch.py \
   slam:=False \
   map:=/home/rm/Desktop/SENTRY_FULL/maps/self_filtered_map.yaml \
   enable_small_gicp:=false \
-  enable_second_lidar_obstacle:=true \
+  enable_second_lidar:=true \
+  enable_second_lidar_filter:=true \
+  enable_second_lidar_safety_limiter:=true \
+  enable_second_lidar_costmap:=false \
   use_rviz:=false
 ```
 
@@ -117,6 +120,7 @@ ros2 topic list | grep second
 ros2 topic hz /second_livox/lidar
 ros2 topic hz /second_lidar_obstacle_cloud
 ros2 topic echo /second_lidar_obstacle_debug
+ros2 topic echo /second_lidar_safety_debug
 ```
 
 预期：
@@ -126,6 +130,7 @@ ros2 topic echo /second_lidar_obstacle_debug
 /second_lidar_obstacle_cloud 有频率
 /second_lidar_obstacle_debug 中 dropped_tf_count 不持续快速增长
 /odometry 仍来自主雷达 Point-LIO
+/cmd_vel_safe 有输出
 ```
 
 ## 到点与 nav_cmd 检查
@@ -156,4 +161,4 @@ is_reached = 1
 
 - `/dev/rm_serial` 不存在：udev 规则未安装、未 reload，或下位机插到了不同 USB 物理口。重新查看 `/dev/serial/by-path/` 并更新 `docs/99-rm-serial.rules` 里的 `KERNELS=="3-8:1.0"`。
 - 第二雷达没点云：确认 `192.168.1.166` 能 ping 通，确认 `pb2025_xmu_second_mid360_config.json` 中 host IP 是 `192.168.1.2`。
-- 坡道误判加重：先用 `enable_second_lidar_obstacle:=false` 做对照，再考虑提高第二雷达过滤节点 `min_height` 或缩小 `max_range`。
+- 坡道误判加重：先确认 `enable_second_lidar_costmap:=false`，确保第二雷达未写入 local costmap；再考虑提高第二雷达过滤节点 `min_height` 或缩小 `max_range`。

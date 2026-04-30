@@ -94,6 +94,7 @@ def generate_launch_description():
         DeclareLaunchArgument("enable_small_gicp", default_value="false"),
         DeclareLaunchArgument("enable_prior_pcd", default_value="false"),
         DeclareLaunchArgument("cmd_vel_input_topic", default_value="/cmd_vel"),
+        DeclareLaunchArgument("cmd_vel_safe_topic", default_value="/cmd_vel_safe"),
         DeclareLaunchArgument("nav_cmd_output_topic", default_value="/nav_cmd"),
         DeclareLaunchArgument("publish_rate_hz", default_value="20.0"),
         DeclareLaunchArgument("cmd_vel_timeout_sec", default_value="0.25"),
@@ -121,7 +122,10 @@ def generate_launch_description():
         DeclareLaunchArgument("lidar_roll", default_value="0.0"),
         DeclareLaunchArgument("lidar_pitch", default_value="0.3115"),
         DeclareLaunchArgument("lidar_yaw", default_value="1.5708"),
-        DeclareLaunchArgument("enable_second_lidar_obstacle", default_value="false"),
+        DeclareLaunchArgument("enable_second_lidar", default_value="false"),
+        DeclareLaunchArgument("enable_second_lidar_filter", default_value="true"),
+        DeclareLaunchArgument("enable_second_lidar_costmap", default_value="false"),
+        DeclareLaunchArgument("enable_second_lidar_safety_limiter", default_value="true"),
         DeclareLaunchArgument("second_lidar_x", default_value="0.0"),
         DeclareLaunchArgument("second_lidar_y", default_value="-0.2"),
         DeclareLaunchArgument("second_lidar_z", default_value="0.35"),
@@ -129,6 +133,9 @@ def generate_launch_description():
         DeclareLaunchArgument("second_lidar_pitch", default_value="0.3115"),
         DeclareLaunchArgument("second_lidar_yaw", default_value="-1.5708"),
         DeclareLaunchArgument("second_lidar_frame", default_value="second_mid360"),
+        DeclareLaunchArgument("second_lidar_filter_target_frame", default_value="gimbal_yaw"),
+        DeclareLaunchArgument("second_lidar_safety_input_topic", default_value="/cmd_vel"),
+        DeclareLaunchArgument("second_lidar_safety_output_topic", default_value="/cmd_vel_safe"),
 
         Node(
             package="rm_hw_bridge",
@@ -253,6 +260,7 @@ def generate_launch_description():
                 "enable_prior_pcd": LaunchConfiguration("enable_prior_pcd"),
                 "enable_cmd_bridge": "true",
                 "cmd_vel_input_topic": LaunchConfiguration("cmd_vel_input_topic"),
+                "cmd_vel_safe_topic": LaunchConfiguration("cmd_vel_safe_topic"),
                 "nav_cmd_output_topic": LaunchConfiguration("nav_cmd_output_topic"),
                 "publish_rate_hz": LaunchConfiguration("publish_rate_hz"),
                 "cmd_vel_timeout_sec": LaunchConfiguration("cmd_vel_timeout_sec"),
@@ -280,7 +288,12 @@ def generate_launch_description():
                 "lidar_roll": LaunchConfiguration("lidar_roll"),
                 "lidar_pitch": LaunchConfiguration("lidar_pitch"),
                 "lidar_yaw": LaunchConfiguration("lidar_yaw"),
-                "enable_second_lidar_obstacle": LaunchConfiguration("enable_second_lidar_obstacle"),
+                "enable_second_lidar": LaunchConfiguration("enable_second_lidar"),
+                "enable_second_lidar_filter": LaunchConfiguration("enable_second_lidar_filter"),
+                "enable_second_lidar_costmap": LaunchConfiguration("enable_second_lidar_costmap"),
+                "enable_second_lidar_safety_limiter": LaunchConfiguration(
+                    "enable_second_lidar_safety_limiter"
+                ),
                 "second_lidar_x": LaunchConfiguration("second_lidar_x"),
                 "second_lidar_y": LaunchConfiguration("second_lidar_y"),
                 "second_lidar_z": LaunchConfiguration("second_lidar_z"),
@@ -288,6 +301,15 @@ def generate_launch_description():
                 "second_lidar_pitch": LaunchConfiguration("second_lidar_pitch"),
                 "second_lidar_yaw": LaunchConfiguration("second_lidar_yaw"),
                 "second_lidar_frame": LaunchConfiguration("second_lidar_frame"),
+                "second_lidar_filter_target_frame": LaunchConfiguration(
+                    "second_lidar_filter_target_frame"
+                ),
+                "second_lidar_safety_input_topic": LaunchConfiguration(
+                    "second_lidar_safety_input_topic"
+                ),
+                "second_lidar_safety_output_topic": LaunchConfiguration(
+                    "second_lidar_safety_output_topic"
+                ),
             }.items(),
         ),
     ])

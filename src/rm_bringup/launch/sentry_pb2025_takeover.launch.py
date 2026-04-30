@@ -90,7 +90,7 @@ def generate_launch_description():
             param_rewrites={
                 "use_sim_time": use_sim_time,
                 "yaml_filename": map_yaml_file,
-                "local_costmap.local_costmap.ros__parameters.second_lidar_obstacle_layer.enabled": LaunchConfiguration("enable_second_lidar_obstacle"),
+                "local_costmap.local_costmap.ros__parameters.second_lidar_obstacle_layer.enabled": LaunchConfiguration("enable_second_lidar_costmap"),
             },
             convert_types=True,
         ),
@@ -106,7 +106,18 @@ def generate_launch_description():
     )
     cmd_bridge_enabled = _is_true("enable_cmd_bridge")
     rviz_enabled = _is_true("use_rviz")
-    second_lidar_enabled = _is_true("enable_second_lidar_obstacle")
+    second_lidar_enabled = _is_true("enable_second_lidar")
+    second_lidar_filter_enabled = _and(
+        second_lidar_enabled, _is_true("enable_second_lidar_filter")
+    )
+    second_lidar_safety_enabled = _and(
+        second_lidar_enabled, _is_true("enable_second_lidar_safety_limiter")
+    )
+    cmd_bridge_safe_enabled = _and(cmd_bridge_enabled, second_lidar_safety_enabled)
+    cmd_bridge_direct_enabled = _and(
+        cmd_bridge_enabled,
+        _or(_is_false("enable_second_lidar"), _is_false("enable_second_lidar_safety_limiter")),
+    )
 
     return LaunchDescription([
         SetEnvironmentVariable("RCUTILS_LOGGING_BUFFERED_STREAM", "1"),
@@ -129,6 +140,7 @@ def generate_launch_description():
         DeclareLaunchArgument("enable_prior_pcd", default_value="false"),
         DeclareLaunchArgument("enable_cmd_bridge", default_value="true"),
         DeclareLaunchArgument("cmd_vel_input_topic", default_value="/cmd_vel"),
+        DeclareLaunchArgument("cmd_vel_safe_topic", default_value="/cmd_vel_safe"),
         DeclareLaunchArgument("nav_cmd_output_topic", default_value="/nav_cmd"),
         DeclareLaunchArgument("publish_rate_hz", default_value="20.0"),
         DeclareLaunchArgument("cmd_vel_timeout_sec", default_value="0.25"),
@@ -156,7 +168,10 @@ def generate_launch_description():
         DeclareLaunchArgument("lidar_roll", default_value="0.0"),
         DeclareLaunchArgument("lidar_pitch", default_value="0.3115"),
         DeclareLaunchArgument("lidar_yaw", default_value="1.5708"),
-        DeclareLaunchArgument("enable_second_lidar_obstacle", default_value="false"),
+        DeclareLaunchArgument("enable_second_lidar", default_value="false"),
+        DeclareLaunchArgument("enable_second_lidar_filter", default_value="true"),
+        DeclareLaunchArgument("enable_second_lidar_costmap", default_value="false"),
+        DeclareLaunchArgument("enable_second_lidar_safety_limiter", default_value="true"),
         DeclareLaunchArgument("second_lidar_x", default_value="0.0"),
         DeclareLaunchArgument("second_lidar_y", default_value="-0.2"),
         DeclareLaunchArgument("second_lidar_z", default_value="0.35"),
@@ -164,6 +179,9 @@ def generate_launch_description():
         DeclareLaunchArgument("second_lidar_pitch", default_value="0.3115"),
         DeclareLaunchArgument("second_lidar_yaw", default_value="-1.5708"),
         DeclareLaunchArgument("second_lidar_frame", default_value="second_mid360"),
+        DeclareLaunchArgument("second_lidar_filter_target_frame", default_value="gimbal_yaw"),
+        DeclareLaunchArgument("second_lidar_safety_input_topic", default_value="/cmd_vel"),
+        DeclareLaunchArgument("second_lidar_safety_output_topic", default_value="/cmd_vel_safe"),
 
         OpaqueFunction(function=_validate_paths),
 
@@ -279,7 +297,7 @@ def generate_launch_description():
             name="livox_ros_driver2",
             output="screen",
             namespace=namespace,
-            condition=IfCondition(_is_false("enable_second_lidar_obstacle")),
+            condition=IfCondition(_is_false("enable_second_lidar")),
             additional_env=navigation_env,
             parameters=[configured_params],
             arguments=["--ros-args", "--log-level", log_level],
@@ -348,14 +366,31 @@ def generate_launch_description():
             executable="second_lidar_obstacle_filter.py",
             name="second_lidar_obstacle_filter",
             output="screen",
-            condition=IfCondition(second_lidar_enabled),
+            condition=IfCondition(second_lidar_filter_enabled),
             additional_env=navigation_env,
             parameters=[{
                 "input_topic": "/second_livox/lidar",
                 "output_topic": "/second_lidar_obstacle_cloud",
                 "debug_topic": "/second_lidar_obstacle_debug",
-                "target_frame": "base_footprint",
+                "target_frame": LaunchConfiguration("second_lidar_filter_target_frame"),
                 "source_frame": LaunchConfiguration("second_lidar_frame"),
+                "use_sim_time": use_sim_time,
+            }],
+            arguments=["--ros-args", "--log-level", log_level],
+        ),
+        Node(
+            package="rm_bringup",
+            executable="second_lidar_safety_limiter.py",
+            name="second_lidar_safety_limiter",
+            output="screen",
+            condition=IfCondition(second_lidar_safety_enabled),
+            additional_env=navigation_env,
+            parameters=[{
+                "input_cmd_vel_topic": LaunchConfiguration("second_lidar_safety_input_topic"),
+                "output_cmd_vel_topic": LaunchConfiguration("second_lidar_safety_output_topic"),
+                "obstacle_topic": "/second_lidar_obstacle_cloud",
+                "debug_topic": "/second_lidar_safety_debug",
+                "frame_id": LaunchConfiguration("second_lidar_filter_target_frame"),
                 "use_sim_time": use_sim_time,
             }],
             arguments=["--ros-args", "--log-level", log_level],
@@ -657,7 +692,40 @@ def generate_launch_description():
             executable="pb_cmd_vel_to_nav_cmd.py",
             name="pb_cmd_vel_to_nav_cmd",
             output="screen",
-            condition=IfCondition(cmd_bridge_enabled),
+            condition=IfCondition(cmd_bridge_safe_enabled),
+            additional_env=navigation_env,
+            parameters=[{
+                "input_topic": LaunchConfiguration("cmd_vel_safe_topic"),
+                "output_topic": LaunchConfiguration("nav_cmd_output_topic"),
+                "cmd_vel_timeout_sec": LaunchConfiguration("cmd_vel_timeout_sec"),
+                "publish_rate_hz": LaunchConfiguration("publish_rate_hz"),
+                "goal_reached_latch_sec": LaunchConfiguration("goal_reached_latch_sec"),
+                "force_zero_angular_z": LaunchConfiguration("force_zero_angular_z"),
+                "enable_heading_align": LaunchConfiguration("enable_heading_align"),
+                "heading_align_only_when_force_zero_angular_z": LaunchConfiguration("heading_align_only_when_force_zero_angular_z"),
+                "heading_align_min_speed": LaunchConfiguration("heading_align_min_speed"),
+                "heading_align_kp": LaunchConfiguration("heading_align_kp"),
+                "heading_align_max_wz": LaunchConfiguration("heading_align_max_wz"),
+                "heading_align_deadband_rad": LaunchConfiguration("heading_align_deadband_rad"),
+                "disable_heading_align_when_reached": LaunchConfiguration("disable_heading_align_when_reached"),
+                "invert_linear_y": LaunchConfiguration("invert_linear_y"),
+                "max_linear_x": LaunchConfiguration("max_linear_x"),
+                "max_linear_y": LaunchConfiguration("max_linear_y"),
+                "max_linear_speed": LaunchConfiguration("max_linear_speed"),
+                "max_angular_z": LaunchConfiguration("max_angular_z"),
+                "max_linear_accel": LaunchConfiguration("max_linear_accel"),
+                "max_angular_accel": LaunchConfiguration("max_angular_accel"),
+                "log_output_hz": LaunchConfiguration("log_output_hz"),
+                "use_sim_time": use_sim_time,
+            }],
+            arguments=["--ros-args", "--log-level", log_level],
+        ),
+        Node(
+            package="rm_bringup",
+            executable="pb_cmd_vel_to_nav_cmd.py",
+            name="pb_cmd_vel_to_nav_cmd",
+            output="screen",
+            condition=IfCondition(cmd_bridge_direct_enabled),
             additional_env=navigation_env,
             parameters=[{
                 "input_topic": LaunchConfiguration("cmd_vel_input_topic"),

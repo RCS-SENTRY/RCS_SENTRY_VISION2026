@@ -20,6 +20,10 @@ PB2025:
   -> Nav2 + pb_omni_pid_pursuit_controller
   -> velocity_smoother -> fake_vel_transform -> /cmd_vel
   -> pb_cmd_vel_to_nav_cmd.py -> /nav_cmd -> rm_hw_bridge
+
+PB2025 + second lidar safety limiter (recommended dual lidar mode):
+  /cmd_vel -> second_lidar_safety_limiter -> /cmd_vel_safe
+  -> pb_cmd_vel_to_nav_cmd.py -> /nav_cmd -> rm_hw_bridge
 ```
 
 `rm_hw_bridge` 的串口协议、`rm_interfaces/msg/NavCmd` 格式和 `/nav_cmd` 订阅接口保持不变。
@@ -139,7 +143,10 @@ ros2 launch rm_bringup sentry_bringup.launch.py \
 | `cmd_vel_timeout_sec` | `0.25` | `/cmd_vel` 超时后持续发布零速 `/nav_cmd` |
 | `force_zero_angular_z` | `true` | 默认屏蔽 PB `/cmd_vel.angular.z` |
 | `enable_heading_align` | `false` | 预留 heading align 能力，默认关闭 |
-| `enable_second_lidar_obstacle` | `false` | 第二 MID-360 只做近场避障补盲，默认关闭 |
+| `enable_second_lidar` | `false` | 第二 MID-360 总开关，默认关闭 |
+| `enable_second_lidar_filter` | `true` | 第二雷达点云过滤器开关，需要配合 `enable_second_lidar:=true` |
+| `enable_second_lidar_safety_limiter` | `true` | 第二雷达近场安全壳，启用后 `/cmd_vel` 先限速为 `/cmd_vel_safe` |
+| `enable_second_lidar_costmap` | `false` | 仅用于 debug，允许 second lidar 写 local costmap，不推荐比赛默认使用 |
 
 默认行为树不执行 `BackUp` / `Spin` / `DriveOnHeading` 这类移动 recovery。默认 `force_zero_angular_z:=true` 且 `enable_heading_align:=false`；比赛前若要打开角速度，必须单独测试 `angular_z` 的方向和幅值。到点成功时 bridge 会在 `goal_reached_latch_sec` 时间内发布零速且 `is_reached=1` 的 `/nav_cmd`。
 
@@ -150,7 +157,7 @@ lidar_x=0.0, lidar_y=0.2, lidar_z=0.35
 lidar_roll=0.0, lidar_pitch=0.3115, lidar_yaw=1.5708
 ```
 
-第二 MID-360 默认关于车体 x 轴镜像，只用于 local obstacle：
+第二 MID-360 默认关于车体 x 轴镜像，默认不写入 local costmap，而是作为近场 safety limiter：
 
 ```text
 second_lidar_x=0.0, second_lidar_y=-0.2, second_lidar_z=0.35
@@ -171,7 +178,7 @@ length=0.50, width=0.50, height=0.55
 - 当前仍是单雷达定位：`front_mid360` 参与 Point-LIO；第二雷达不参与 Point-LIO、不参与建图、不参与 small_gicp。
 - 坡道若仍被识别为障碍，先录包判断是 `/terrain_map` 错，还是 costmap 解释错；可小步尝试 `quantileZ: 0.30`、`maxRelZ/upperBoundZ: 0.70`、`disRatioZ: 0.30`。
 
-第二雷达避障测试：
+双雷达避障（safety limiter 模式，推荐）：
 
 ```bash
 ros2 launch rm_bringup sentry_bringup.launch.py \
@@ -183,11 +190,70 @@ ros2 launch rm_bringup sentry_bringup.launch.py \
   slam:=False \
   map:=/home/rm/Desktop/SENTRY_FULL/maps/self_filtered_map.yaml \
   enable_small_gicp:=false \
-  enable_second_lidar_obstacle:=true \
+  enable_second_lidar:=true \
+  enable_second_lidar_filter:=true \
+  enable_second_lidar_safety_limiter:=true \
+  enable_second_lidar_costmap:=false \
   use_rviz:=false
+
+debug 才允许开启 second lidar costmap（不推荐比赛默认开启）：
+
+```bash
+ros2 launch rm_bringup sentry_bringup.launch.py \
+  navigation_only:=true \
+  use_serial:=true \
+  serial_device:=/dev/rm_serial \
+  baudrate:=460800 \
+  enable_navigation:=true \
+  slam:=False \
+  map:=/home/rm/Desktop/SENTRY_FULL/maps/self_filtered_map.yaml \
+  enable_small_gicp:=false \
+  enable_second_lidar:=true \
+  enable_second_lidar_filter:=true \
+  enable_second_lidar_safety_limiter:=true \
+  enable_second_lidar_costmap:=true \
+  use_rviz:=true
+```
 ```
 
-启用第二雷达前，需要按实车填写 `src/rm_bringup/config/pb2025_xmu_second_mid360_config.json` 中的第二雷达 IP / broadcast code / host IP。若启用后坡道误判加重，先关闭 `enable_second_lidar_obstacle` 做对照，再考虑把第二雷达 `min_obstacle_height` 提高到 `0.15` 或缩小作用范围。
+启用第二雷达前，需要按实车填写 `src/rm_bringup/config/pb2025_xmu_second_mid360_config.json` 中的第二雷达 IP / broadcast code / host IP。若出现大云台旋转导致鬼障碍，先确认没有误开 `enable_second_lidar_costmap`，再根据 `second_lidar_safety_limiter` 的 debug 输出调小作用范围。
+
+推荐启动命令：
+
+单雷达稳定主链：
+
+```bash
+ros2 launch rm_bringup sentry_bringup.launch.py \
+  navigation_only:=true \
+  use_serial:=true \
+  serial_device:=/dev/rm_serial \
+  baudrate:=460800 \
+  enable_navigation:=true \
+  slam:=False \
+  map:=/home/rm/Desktop/SENTRY_FULL/maps/self_filtered_map.yaml \
+  enable_small_gicp:=false \
+  enable_second_lidar:=false \
+  use_rviz:=true
+```
+
+双雷达 safety limiter 模式：
+
+```bash
+ros2 launch rm_bringup sentry_bringup.launch.py \
+  navigation_only:=true \
+  use_serial:=true \
+  serial_device:=/dev/rm_serial \
+  baudrate:=460800 \
+  enable_navigation:=true \
+  slam:=False \
+  map:=/home/rm/Desktop/SENTRY_FULL/maps/self_filtered_map.yaml \
+  enable_small_gicp:=false \
+  enable_second_lidar:=true \
+  enable_second_lidar_filter:=true \
+  enable_second_lidar_safety_limiter:=true \
+  enable_second_lidar_costmap:=false \
+  use_rviz:=true
+```
 
 ## 常用调试
 
@@ -197,8 +263,10 @@ ros2 topic hz /odometry
 ros2 topic hz /terrain_map
 ros2 topic hz /terrain_map_ext
 ros2 topic hz /cmd_vel
+ros2 topic hz /cmd_vel_safe
 ros2 topic hz /nav_cmd
 ros2 topic echo /cmd_vel
+ros2 topic echo /cmd_vel_safe
 ros2 topic echo /nav_cmd
 ros2 run tf2_ros tf2_echo map odom
 ros2 run tf2_ros tf2_echo odom base_footprint
@@ -207,8 +275,10 @@ ros2 topic list | grep second
 ros2 topic hz /second_livox/lidar
 ros2 topic hz /second_lidar_obstacle_cloud
 ros2 topic echo /second_lidar_obstacle_debug
+ros2 topic echo /second_lidar_safety_debug
 ros2 topic echo /local_costmap/costmap --once
 ros2 topic echo /global_costmap/costmap --once
+ros2 param get /local_costmap/local_costmap second_lidar_obstacle_layer.enabled
 ```
 
 到点检查：
@@ -238,4 +308,4 @@ ros2 topic echo /nav_cmd
 - 不推荐 ToDesk + RViz + 点云全开。
 - 机器人端 RViz 若出现 GLSL sampler/link error，优先关闭机器人端 RViz，改用本地电脑 RViz；这通常是远程桌面或显卡 OpenGL 驱动组合问题，不是导航链路本身。
 
-更多细节见 `docs/debugging_low_bandwidth.md`，串口固定见 `docs/serial_device_binding.md`，双雷达上车测试见 `docs/dual_lidar_test_guide.md`。
+更多细节见 `docs/debugging_low_bandwidth.md`，串口固定见 `docs/serial_device_binding.md`，双雷达安全壳说明见 `docs/dual_lidar_safety_limiter.md`，双雷达上车测试见 `docs/dual_lidar_test_guide.md`。

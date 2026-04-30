@@ -15,6 +15,7 @@ install(PROGRAMS
   scripts/livox_custom_to_pointcloud2.py
   scripts/pb_cmd_vel_to_nav_cmd.py
   scripts/second_lidar_obstacle_filter.py
+  scripts/second_lidar_safety_limiter.py
   DESTINATION lib/${PROJECT_NAME}
 )
 
