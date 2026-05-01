@@ -6,7 +6,7 @@
 //   2. PnP: 2D 像素 → 相机系 3D
 //   3. 坐标变换: 相机系 → 云台系 → 世界惯性系
 //   4. IMM-UKF Tracker: 观测更新 + 前馈预测
-//   5. Aimer: 物理前馈逆运动学 + 三段火控 + 重力补偿
+//   5. Aimer: 物理前馈逆运动学 + 火控判定 + 重力补偿
 //   6. 发布 GimbalCmd 控制指令
 // =============================================================================
 #ifndef RM_AUTOAIM__AUTOAIM_NODE_HPP_
@@ -94,9 +94,8 @@ private:
 
   void publish_fire_debug(
     const std::string & aim_source,
-    bool gate1_alignment,
-    bool gate2_facing,
-    bool gate3_ready,
+    bool alignment_ready,
+    bool tracker_ready,
     bool ray_guard,
     bool prediction_guard,
     bool fallback_allows_fire,

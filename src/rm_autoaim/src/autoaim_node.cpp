@@ -9,7 +9,7 @@
 //     → transform_to_world(P_cam, Q)    // 相机系→当前云台系 / 世界惯性系
 //     → tracker_.update(p_world, t)     // IMM-UKF 观测更新
 //     → tracker_.predict(t + Δt)        // 前馈预测
-//     → aimer_.solve(...)               // 物理逆运动学 + 三段火控
+//     → aimer_.solve(...)               // 物理逆运动学 + 火控判定
 //     → publish(GimbalCmd)              // 发布控制指令
 // =============================================================================
 #include "rm_autoaim/autoaim_node.hpp"
@@ -287,8 +287,6 @@ AutoaimNode::AutoaimNode(const rclcpp::NodeOptions & options)
   this->declare_parameter<double>("shooting_range_height", 0.055);
   this->declare_parameter<double>("min_fire_window_deg", 1.0);
   this->declare_parameter<double>("max_fire_window_deg", 3.0);
-  this->declare_parameter<double>("armor_facing_tolerance", 30.0);
-  this->declare_parameter<double>("ctrv_threshold", 0.5);
   this->declare_parameter<int>("fire_min_frames", 3);
   this->declare_parameter<double>("fire_max_distance", 8.0);
 
@@ -315,8 +313,6 @@ AutoaimNode::AutoaimNode(const rclcpp::NodeOptions & options)
     this->get_parameter("min_fire_window_deg").as_double();
   aimer_params.max_fire_window_deg =
     this->get_parameter("max_fire_window_deg").as_double();
-  aimer_params.armor_facing_tol = this->get_parameter("armor_facing_tolerance").as_double();
-  aimer_params.ctrv_threshold   = this->get_parameter("ctrv_threshold").as_double();
   aimer_params.fire_min_frames  = this->get_parameter("fire_min_frames").as_int();
   aimer_params.fire_max_distance = this->get_parameter("fire_max_distance").as_double();
 
@@ -332,7 +328,7 @@ AutoaimNode::AutoaimNode(const rclcpp::NodeOptions & options)
     imu_topic, rclcpp::SensorDataQoS(),
     [this](const sensor_msgs::msg::Imu::ConstSharedPtr msg) { on_imu(msg); });
 
-  // 下位机状态反馈 (用于火控 Gate 1)
+  // 下位机状态反馈 (用于火控对齐窗口)
   status_sub_ = this->create_subscription<GimbalStatus>(
     gimbal_status_topic, rclcpp::SensorDataQoS(),
     [this](const GimbalStatus::ConstSharedPtr msg) { on_gimbal_status(msg); });
@@ -379,9 +375,8 @@ const char * AutoaimNode::track_state_name(AutoaimTrackState state)
 
 void AutoaimNode::publish_fire_debug(
   const std::string & aim_source,
-  bool gate1_alignment,
-  bool gate2_facing,
-  bool gate3_ready,
+  bool alignment_ready,
+  bool tracker_ready,
   bool ray_guard,
   bool prediction_guard,
   bool fallback_allows_fire,
@@ -404,10 +399,9 @@ void AutoaimNode::publish_fire_debug(
      << "state=" << track_state_name(track_state_)
      << " source=" << aim_source
      << " fire=" << fire_control
-     << " can_fire=" << ((gate1_alignment && gate2_facing && gate3_ready) ? 1 : 0)
-     << " gate1=" << (gate1_alignment ? 1 : 0)
-     << " gate2=" << (gate2_facing ? 1 : 0)
-     << " gate3=" << (gate3_ready ? 1 : 0)
+     << " can_fire=" << ((alignment_ready && tracker_ready) ? 1 : 0)
+     << " alignment_ready=" << (alignment_ready ? 1 : 0)
+     << " tracker_ready=" << (tracker_ready ? 1 : 0)
      << " ray_guard=" << (ray_guard ? 1 : 0)
      << " prediction_guard=" << (prediction_guard ? 1 : 0)
      << " fallback_allows_fire=" << (fallback_allows_fire ? 1 : 0)
@@ -456,7 +450,7 @@ void AutoaimNode::on_imu(const sensor_msgs::msg::Imu::ConstSharedPtr msg)
 }
 
 // =============================================================================
-// 云台状态回调：更新当前真实角度 (用于火控 Gate 1)
+// 云台状态回调：更新当前真实角度 (用于火控对齐窗口)
 // =============================================================================
 void AutoaimNode::on_gimbal_status(const GimbalStatus::ConstSharedPtr msg)
 {
@@ -518,7 +512,6 @@ void AutoaimNode::on_armors(const ArmorDetections::ConstSharedPtr msg)
         false,
         false,
         false,
-        false,
         0,
         model_probs[0],
         model_probs[1],
@@ -553,7 +546,6 @@ void AutoaimNode::on_armors(const ArmorDetections::ConstSharedPtr msg)
       false,
       false,
       false,
-      false,
       0,
       0.0,
       0.0,
@@ -579,7 +571,6 @@ void AutoaimNode::on_armors(const ArmorDetections::ConstSharedPtr msg)
       "No IMU bracket for stamp %.3f. Dropping frame.", t_img.seconds());
     publish_fire_debug(
       "none",
-      false,
       false,
       false,
       false,
@@ -720,7 +711,6 @@ void AutoaimNode::on_armors(const ArmorDetections::ConstSharedPtr msg)
 
   auto predicted_aim = aimer_.solve(
     predicted_state,
-    model_probs,
     cur_yaw,
     cur_pitch,
     tracker_frame_count_,
@@ -733,7 +723,6 @@ void AutoaimNode::on_armors(const ArmorDetections::ConstSharedPtr msg)
   direct_state(2) = obs.z();
   auto direct_aim = aimer_.solve(
     direct_state,
-    model_probs,
     cur_yaw,
     cur_pitch,
     tracker_frame_count_,
@@ -772,7 +761,6 @@ void AutoaimNode::on_armors(const ArmorDetections::ConstSharedPtr msg)
   }
   auto ray_aim = aimer_.solve(
     ray_state,
-    model_probs,
     cur_yaw,
     cur_pitch,
     tracker_frame_count_,
@@ -813,10 +801,7 @@ void AutoaimNode::on_armors(const ArmorDetections::ConstSharedPtr msg)
 
   // ======== Step 7: 构建 GimbalCmd ========
   // 有目标 → mode=1 (auto_aim)
-  // fire_control 由 Aimer 三段火控判定:
-  //   Gate 1: 炮管对齐 (target vs current)
-  //   Gate 2: 装甲板相位窗口 (Spin Killer)
-  //   Gate 3: 收敛/距离保护
+  // fire_control 由 Aimer 的对齐窗口 + Tracker 收敛/距离判定给出。
   GimbalCmd cmd;
   cmd.target_yaw   = aim.target_yaw;
   cmd.target_pitch = aim.target_pitch;
@@ -882,9 +867,8 @@ void AutoaimNode::on_armors(const ArmorDetections::ConstSharedPtr msg)
 
   publish_fire_debug(
     source,
-    aim.gate1_alignment,
-    aim.gate2_facing,
-    aim.gate3_ready,
+    aim.alignment_ready,
+    aim.tracker_ready,
     use_ray_fallback,
     use_direct_fallback,
     fallback_allows_fire,
@@ -900,7 +884,7 @@ void AutoaimNode::on_armors(const ArmorDetections::ConstSharedPtr msg)
     0.0);
 
   RCLCPP_INFO_THROTTLE(get_logger(), *get_clock(), 2000,
-    "Aim: src=%s cmd=(%.2f°, %.2f°) err=(%.2f°, %.2f°) fire=%d gate=[%s%s%s] "
+    "Aim: src=%s cmd=(%.2f°, %.2f°) err=(%.2f°, %.2f°) fire=%d ready=[align:%s tracker:%s] "
     "fallback_fire=%d frames=%d win=(%.2f°, %.2f°)",
     source,
     aim.target_yaw * 180.0 / M_PI,
@@ -908,9 +892,8 @@ void AutoaimNode::on_armors(const ArmorDetections::ConstSharedPtr msg)
     cmd_yaw_err_deg,
     cmd_pitch_err_deg,
     cmd.fire_control,
-    aim.gate1_alignment ? "1" : "0",
-    aim.gate2_facing ? "1" : "0",
-    aim.gate3_ready ? "1" : "0",
+    aim.alignment_ready ? "1" : "0",
+    aim.tracker_ready ? "1" : "0",
     fallback_allows_fire ? 1 : 0,
     tracker_frame_count_,
     aim.yaw_window * 180.0 / M_PI,

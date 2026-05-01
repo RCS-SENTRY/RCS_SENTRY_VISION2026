@@ -1,5 +1,5 @@
 // =============================================================================
-// aimer.hpp — 物理前馈逆运动学 + 军事级三段火控
+// aimer.hpp — 物理前馈逆运动学 + 简洁火控判定
 // =============================================================================
 // 职责: 接收 Tracker 预测状态 → 解算瞄准角度 → 判定开火窗口
 // 设计: 纯数学类，零 ROS 依赖，可离线单元测试
@@ -22,7 +22,6 @@
 #ifndef RM_AUTOAIM__AIMER_HPP_
 #define RM_AUTOAIM__AIMER_HPP_
 
-#include <array>
 #include <cmath>
 #include <algorithm>
 #include <utility>
@@ -46,7 +45,7 @@ struct AimerParams
   double yaw_offset      = 0.0;     // yaw 常量偏置 (rad), 正=向左补, 负=向右补
   bool   pitch_invert    = false;   // 若协议 pitch 正方向与数学解算相反，则在生成命令前取反
 
-  // ---- 火控 Gate 1: 炮管对齐容差 ----
+  // ---- 火控: 炮管对齐容差 ----
   double fire_tolerance  = 0.03;    // yaw/pitch 对齐容差 (rad, ≈1.7°)
   bool   use_dynamic_fire_window = true;
   double shooting_range_width = 0.135;
@@ -54,11 +53,7 @@ struct AimerParams
   double min_fire_window_deg = 1.0;
   double max_fire_window_deg = 3.0;
 
-  // ---- 火控 Gate 2: 装甲板相位窗口 (Spin Killer) ----
-  double armor_facing_tol = 30.0;   // 装甲板法线对齐容差 (deg)
-  double ctrv_threshold   = 0.5;    // CTRV 模型概率高于此值才启用 Gate 2
-
-  // ---- 火控 Gate 3: 收敛/距离保护 ----
+  // ---- 火控: Tracker 收敛/距离保护 ----
   int    fire_min_frames  = 3;      // Tracker 最少收敛帧数
   double fire_max_distance = 8.0;   // 最大开火距离 (m)
 
@@ -92,20 +87,17 @@ public:
     double target_pitch;    // 最终绝对 pitch 命令 (rad), 语义与 GimbalStatus.gimbal_pitch 完全一致
     double yaw_vel;         // yaw 前馈角速度 (rad/s)
     double pitch_vel;       // pitch 前馈角速度 (rad/s)
-    bool   gate1_alignment; // Gate 1: 炮管对齐
-    bool   gate2_facing;    // Gate 2: 装甲板相位窗口
-    bool   gate3_ready;     // Gate 3: 收敛/距离保护
+    bool   alignment_ready; // 炮管对齐
+    bool   tracker_ready;   // Tracker 收敛且距离有效
     bool   can_fire;        // 火控判定: true = 允许开火
     double t_flight;        // 子弹飞行时间 (s)
-    double hit_phi;         // 预测的击中时装甲板相位角 (rad)
     double target_distance;  // 预测状态 3D 距离 (m)
-    double yaw_window;       // Gate 1 yaw 实际窗口 (rad)
-    double pitch_window;     // Gate 1 pitch 实际窗口 (rad)
+    double yaw_window;       // yaw 实际射击窗口 (rad)
+    double pitch_window;     // pitch 实际射击窗口 (rad)
   };
 
   /// 完整解算
   /// @param predicted_state   Tracker 预测的 9D 状态
-  /// @param model_probs       IMM 模型概率 [P_CV, P_CTRV]
   /// @param current_yaw_deg   下位机反馈的当前真实 yaw (deg)
   /// @param current_pitch_deg 下位机反馈的当前真实 pitch (deg)
   /// @param tracker_frames    Tracker 已更新帧数
@@ -116,7 +108,6 @@ public:
   ///                         false: predicted_state 已在世界/惯性系, inverseKinematics 直接输出绝对角
   AimResult solve(
     const StateVec & predicted_state,
-    const std::array<double, 2> & model_probs,
     double current_yaw_deg,
     double current_pitch_deg,
     int tracker_frames,
@@ -151,12 +142,12 @@ public:
   double getPitchOffset(double distance) const;
 
   // ===========================================================================
-  // 三段火控
+  // 火控判定
   // ===========================================================================
 
-  /// Gate 1: 炮管对齐容差
+  /// 炮管对齐判定
   /// 比较解算角度与下位机当前真实角度
-  bool gateBarrelAlignment(
+  bool checkAlignmentReady(
     double target_yaw, double target_pitch,
     double current_yaw_deg, double current_pitch_deg,
     double distance) const;
@@ -164,16 +155,8 @@ public:
   /// 获取当前距离对应的 yaw/pitch 射击窗口 (rad)
   std::pair<double, double> getFireWindows(double distance) const;
 
-  /// Gate 2: 装甲板相位窗口 (Spin Killer)
-  /// 预测子弹击中时装甲板法线与射线夹角
-  bool gateArmorFacing(
-    const StateVec & state,
-    double target_yaw,
-    double t_flight,
-    double p_ctrv) const;
-
-  /// Gate 3: 收敛/距离保护
-  bool gateConvergenceAndRange(
+  /// Tracker 收敛/距离保护
+  bool checkTrackerReady(
     const StateVec & state,
     int tracker_frames) const;
 
@@ -187,7 +170,6 @@ private:
 
 inline Aimer::AimResult Aimer::solve(
   const StateVec & predicted_state,
-  const std::array<double, 2> & model_probs,
   double current_yaw_deg,
   double current_pitch_deg,
   int tracker_frames,
@@ -235,14 +217,7 @@ inline Aimer::AimResult Aimer::solve(
   result.yaw_vel   = (r_sq > 1e-4) ? ((xc * vy - yc * vx) / r_sq) : 0.0;
   result.pitch_vel = 0.0;
 
-  // ---- Step 6: 预测击中时的装甲板相位角 (用于 Gate 2) ----
-  double phi_now   = predicted_state(7);   // 当前相位角 (rad)
-  double omega     = predicted_state(8);   // 角速度 (rad/s)
-  result.hit_phi   = phi_now + omega * t_flight;
-
-  // ---- Step 7: 三段火控判定 ----
-  // Gate 1 比较最终绝对命令 vs 下位机当前绝对姿态
-  // Gate 2 继续使用 tracker 所在参考系下的 yaw, 保持与 state/phi 语义一致
+  // ---- Step 6: 火控判定 ----
   result.target_distance = std::sqrt(
     predicted_state(0) * predicted_state(0) +
     predicted_state(1) * predicted_state(1) +
@@ -251,16 +226,14 @@ inline Aimer::AimResult Aimer::solve(
   result.yaw_window = fire_windows.first;
   result.pitch_window = fire_windows.second;
 
-  bool gate1 = gateBarrelAlignment(
+  bool alignment_ready = checkAlignmentReady(
     result.target_yaw, result.target_pitch, current_yaw_deg, current_pitch_deg,
     result.target_distance);
-  bool gate2 = gateArmorFacing(predicted_state, command_yaw, t_flight, model_probs[1]);
-  bool gate3 = gateConvergenceAndRange(predicted_state, tracker_frames);
+  bool tracker_ready = checkTrackerReady(predicted_state, tracker_frames);
 
-  result.gate1_alignment = gate1;
-  result.gate2_facing = gate2;
-  result.gate3_ready = gate3;
-  result.can_fire = gate1 && gate2 && gate3;
+  result.alignment_ready = alignment_ready;
+  result.tracker_ready = tracker_ready;
+  result.can_fire = alignment_ready && tracker_ready;
 
   return result;
 }
@@ -351,12 +324,12 @@ inline double Aimer::getPitchOffset(double distance) const
 }
 
 // =============================================================================
-// Gate 1: 炮管对齐容差
+// 炮管对齐容差
 // =============================================================================
 // 比较解算角度 (数学约定, rad) 与下位机反馈角度 (deg)
 // 注意: GimbalStatus 中 yaw/pitch 单位为 deg
 // =============================================================================
-inline bool Aimer::gateBarrelAlignment(
+inline bool Aimer::checkAlignmentReady(
   double target_yaw, double target_pitch,
   double current_yaw_deg, double current_pitch_deg,
   double distance) const
@@ -394,56 +367,9 @@ inline std::pair<double, double> Aimer::getFireWindows(double distance) const
 }
 
 // =============================================================================
-// Gate 2: 装甲板相位窗口 (The Spin Killer)
+// Tracker 收敛保护 + 距离保护
 // =============================================================================
-// 原理:
-//   CTRV 模型下，目标在绕中心旋转。装甲板法线方向随相位角 φ 变化。
-//   子弹击中时，装甲板法线方向为:
-//     n = [cos(φ_hit + π/2), sin(φ_hit + π/2), 0]^T
-//   (法线垂直于半径方向)
-//
-//   枪管射线方向:
-//     d = [cos(yaw)·cos(pitch), sin(yaw)·cos(pitch), sin(pitch)]^T
-//
-//   夹角 θ = arccos(n · d)
-//   只有 θ < armor_facing_tol 时才开火
-//
-//   当目标不旋转 (CV 模型权重高) 时, 此门控自动旁路
-// =============================================================================
-inline bool Aimer::gateArmorFacing(
-  const StateVec & state,
-  double target_yaw,
-  double t_flight,
-  double p_ctrv) const
-{
-  // 如果 CTRV 概率低于阈值 → 目标不在旋转 → 旁路此门控
-  if (p_ctrv < params_.ctrv_threshold) return true;
-
-  // 预测击中时的相位角
-  double phi   = state(7);   // 当前相位
-  double omega = state(8);   // 角速度
-  double phi_hit = phi + omega * t_flight;
-
-  // 装甲板法线方向 (水平面, 垂直于半径)
-  double n_x = std::cos(phi_hit + M_PI / 2.0);
-  double n_y = std::sin(phi_hit + M_PI / 2.0);
-
-  // 枪管射线方向 (水平面投影, 忽略 pitch 影响简化计算)
-  double d_x = std::cos(target_yaw);
-  double d_y = std::sin(target_yaw);
-
-  // 法线与射线的夹角
-  double cos_theta = n_x * d_x + n_y * d_y;
-  cos_theta = std::clamp(cos_theta, -1.0, 1.0);
-  double theta_deg = std::acos(cos_theta) * 180.0 / M_PI;
-
-  return theta_deg < params_.armor_facing_tol;
-}
-
-// =============================================================================
-// Gate 3: 收敛保护 + 距离保护
-// =============================================================================
-inline bool Aimer::gateConvergenceAndRange(
+inline bool Aimer::checkTrackerReady(
   const StateVec & state,
   int tracker_frames) const
 {
