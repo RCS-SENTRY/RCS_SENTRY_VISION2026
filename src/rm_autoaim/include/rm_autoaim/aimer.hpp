@@ -25,6 +25,7 @@
 #include <array>
 #include <cmath>
 #include <algorithm>
+#include <utility>
 
 #include <Eigen/Dense>
 
@@ -47,13 +48,18 @@ struct AimerParams
 
   // ---- 火控 Gate 1: 炮管对齐容差 ----
   double fire_tolerance  = 0.03;    // yaw/pitch 对齐容差 (rad, ≈1.7°)
+  bool   use_dynamic_fire_window = true;
+  double shooting_range_width = 0.135;
+  double shooting_range_height = 0.055;
+  double min_fire_window_deg = 1.0;
+  double max_fire_window_deg = 3.0;
 
   // ---- 火控 Gate 2: 装甲板相位窗口 (Spin Killer) ----
   double armor_facing_tol = 30.0;   // 装甲板法线对齐容差 (deg)
   double ctrv_threshold   = 0.5;    // CTRV 模型概率高于此值才启用 Gate 2
 
   // ---- 火控 Gate 3: 收敛/距离保护 ----
-  int    fire_min_frames  = 5;      // Tracker 最少收敛帧数
+  int    fire_min_frames  = 3;      // Tracker 最少收敛帧数
   double fire_max_distance = 8.0;   // 最大开火距离 (m)
 
   // ---- 弹道补偿 LUT 系数 (预留) ----
@@ -92,6 +98,9 @@ public:
     bool   can_fire;        // 火控判定: true = 允许开火
     double t_flight;        // 子弹飞行时间 (s)
     double hit_phi;         // 预测的击中时装甲板相位角 (rad)
+    double target_distance;  // 预测状态 3D 距离 (m)
+    double yaw_window;       // Gate 1 yaw 实际窗口 (rad)
+    double pitch_window;     // Gate 1 pitch 实际窗口 (rad)
   };
 
   /// 完整解算
@@ -149,7 +158,11 @@ public:
   /// 比较解算角度与下位机当前真实角度
   bool gateBarrelAlignment(
     double target_yaw, double target_pitch,
-    double current_yaw_deg, double current_pitch_deg) const;
+    double current_yaw_deg, double current_pitch_deg,
+    double distance) const;
+
+  /// 获取当前距离对应的 yaw/pitch 射击窗口 (rad)
+  std::pair<double, double> getFireWindows(double distance) const;
 
   /// Gate 2: 装甲板相位窗口 (Spin Killer)
   /// 预测子弹击中时装甲板法线与射线夹角
@@ -230,8 +243,17 @@ inline Aimer::AimResult Aimer::solve(
   // ---- Step 7: 三段火控判定 ----
   // Gate 1 比较最终绝对命令 vs 下位机当前绝对姿态
   // Gate 2 继续使用 tracker 所在参考系下的 yaw, 保持与 state/phi 语义一致
+  result.target_distance = std::sqrt(
+    predicted_state(0) * predicted_state(0) +
+    predicted_state(1) * predicted_state(1) +
+    predicted_state(2) * predicted_state(2));
+  auto fire_windows = getFireWindows(result.target_distance);
+  result.yaw_window = fire_windows.first;
+  result.pitch_window = fire_windows.second;
+
   bool gate1 = gateBarrelAlignment(
-    result.target_yaw, result.target_pitch, current_yaw_deg, current_pitch_deg);
+    result.target_yaw, result.target_pitch, current_yaw_deg, current_pitch_deg,
+    result.target_distance);
   bool gate2 = gateArmorFacing(predicted_state, command_yaw, t_flight, model_probs[1]);
   bool gate3 = gateConvergenceAndRange(predicted_state, tracker_frames);
 
@@ -336,7 +358,8 @@ inline double Aimer::getPitchOffset(double distance) const
 // =============================================================================
 inline bool Aimer::gateBarrelAlignment(
   double target_yaw, double target_pitch,
-  double current_yaw_deg, double current_pitch_deg) const
+  double current_yaw_deg, double current_pitch_deg,
+  double distance) const
 {
   // 下位机反馈: deg → rad (全部直传, 坐标系已对齐)
   double cur_yaw   = current_yaw_deg * M_PI / 180.0;
@@ -346,8 +369,28 @@ inline bool Aimer::gateBarrelAlignment(
                                            std::cos(target_yaw - cur_yaw)));
   double err_pitch = std::fabs(target_pitch - cur_pitch);
 
-  return (err_yaw < params_.fire_tolerance) &&
-         (err_pitch < params_.fire_tolerance);
+  auto fire_windows = getFireWindows(distance);
+  return (err_yaw < fire_windows.first) &&
+         (err_pitch < fire_windows.second);
+}
+
+inline std::pair<double, double> Aimer::getFireWindows(double distance) const
+{
+  if (!params_.use_dynamic_fire_window || distance <= 1e-3) {
+    return {params_.fire_tolerance, params_.fire_tolerance};
+  }
+
+  double yaw_window = std::atan2(params_.shooting_range_width / 2.0, distance);
+  double pitch_window = std::atan2(params_.shooting_range_height / 2.0, distance);
+
+  double min_window = params_.min_fire_window_deg * M_PI / 180.0;
+  double max_window = params_.max_fire_window_deg * M_PI / 180.0;
+  if (min_window > max_window) std::swap(min_window, max_window);
+
+  yaw_window = std::clamp(yaw_window, min_window, max_window);
+  pitch_window = std::clamp(pitch_window, min_window, max_window);
+
+  return {yaw_window, pitch_window};
 }
 
 // =============================================================================

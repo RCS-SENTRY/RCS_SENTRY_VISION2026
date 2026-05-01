@@ -74,6 +74,15 @@ rm_autoaim:
     enable_ray_consistency_guard: true
     ray_consistency_guard_deg: 10.0
 
+    # ---- Tracker lifecycle ----
+    temp_lost_timeout_sec: 0.30
+    lost_timeout_sec: 0.80
+    hold_last_cmd_in_temp_lost: true
+
+    # ---- Fallback fire policy ----
+    allow_fire_on_prediction_fallback: true
+    allow_fire_on_ray_fallback: false
+
     # =====================================================================
     # IMM-UKF Tracker 参数
     # tune_ukf.py Top1 (2026-04-10): J=0.5058
@@ -114,6 +123,13 @@ rm_autoaim:
     # 0.03 rad ≈ 1.7°
     fire_tolerance: 0.03
 
+    # ---- Fire window ----
+    use_dynamic_fire_window: true
+    shooting_range_width: 0.135
+    shooting_range_height: 0.055
+    min_fire_window_deg: 1.0
+    max_fire_window_deg: 3.0
+
     # ---- 火控 Gate 2: 装甲板相位窗口 (Spin Killer) ----
     # 装甲板法线与枪管射线夹角容差 (deg)
     armor_facing_tolerance: 30.0
@@ -123,7 +139,7 @@ rm_autoaim:
 
     # ---- 火控 Gate 3: 收敛/距离保护 ----
     # Tracker 最少收敛帧数 (防止初始发散时开火)
-    fire_min_frames: 5
+    fire_min_frames: 3
     # 最大开火距离 (m)
     fire_max_distance: 8.0
 

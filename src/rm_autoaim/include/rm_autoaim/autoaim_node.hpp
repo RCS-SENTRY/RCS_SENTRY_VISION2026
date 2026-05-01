@@ -24,6 +24,7 @@
 #include <rm_interfaces/msg/armor_detections.hpp>
 #include <rm_interfaces/msg/gimbal_cmd.hpp>
 #include <rm_interfaces/msg/gimbal_status.hpp>
+#include <std_msgs/msg/string.hpp>
 
 #include <opencv2/opencv.hpp>
 #include <opencv2/core/quaternion.hpp>
@@ -41,6 +42,13 @@ struct ImuStamp
 {
   rclcpp::Time stamp;
   cv::Quatd orientation;
+};
+
+enum class AutoaimTrackState
+{
+  LOST,
+  TRACKING,
+  TEMP_LOST
 };
 
 // =============================================================================
@@ -82,6 +90,27 @@ private:
     const cv::Vec3d & p_cam,
     const cv::Quatd & q_gimbal_to_world);
 
+  static const char * track_state_name(AutoaimTrackState state);
+
+  void publish_fire_debug(
+    const std::string & aim_source,
+    bool gate1_alignment,
+    bool gate2_facing,
+    bool gate3_ready,
+    bool ray_guard,
+    bool prediction_guard,
+    bool fallback_allows_fire,
+    int fire_control,
+    double model_prob_cv,
+    double model_prob_ctrv,
+    double target_distance,
+    double cmd_yaw_err_deg,
+    double cmd_pitch_err_deg,
+    double yaw_window,
+    double pitch_window,
+    const std::string & reason,
+    double age_sec);
+
   // ===========================================================================
   // 参数 — PnP / 坐标变换
   // ===========================================================================
@@ -103,15 +132,27 @@ private:
   double prediction_consistency_guard_deg_ = 25.0;
   bool enable_ray_consistency_guard_ = true;
   double ray_consistency_guard_deg_ = 10.0;
+  bool allow_fire_on_prediction_fallback_ = true;
+  bool allow_fire_on_ray_fallback_ = false;
+
+  double temp_lost_timeout_sec_ = 0.30;
+  double lost_timeout_sec_ = 0.80;
+  bool hold_last_cmd_in_temp_lost_ = true;
 
   // ===========================================================================
   // Tracker + Aimer
   // ===========================================================================
+  UKFParams ukf_params_;
   ImmUkfTracker tracker_;
   Aimer aimer_;
   int tracker_frame_count_ = 0;
   bool last_ray_guard_active_ = false;
   bool last_prediction_guard_active_ = false;
+  AutoaimTrackState track_state_{AutoaimTrackState::LOST};
+  rclcpp::Time last_detection_time_;
+  bool has_last_detection_{false};
+  rm_interfaces::msg::GimbalCmd last_good_cmd_;
+  bool has_last_good_cmd_{false};
 
   // 下位机反馈状态 (由 on_gimbal_status 更新)
   std::mutex gimbal_mutex_;
@@ -135,6 +176,7 @@ private:
 
   rclcpp::Publisher<geometry_msgs::msg::PointStamped>::SharedPtr world_points_pub_;
   rclcpp::Publisher<rm_interfaces::msg::GimbalCmd>::SharedPtr gimbal_cmd_pub_;
+  rclcpp::Publisher<std_msgs::msg::String>::SharedPtr fire_debug_pub_;
 };
 
 }  // namespace rm_autoaim
