@@ -11,6 +11,11 @@
 
 namespace
 {
+bool UpdateHysteresis(bool previous, bool enter, bool exit)
+{
+    return previous ? !exit : enter;
+}
+
 // UpdateBlackboardNode 是整棵主树的起始节点。
 // 它的核心作用不是“从外部取数”，而是把接口层已经写入的输入快照
 // 重新整理成适合本轮决策使用的中间状态。
@@ -34,10 +39,6 @@ public:
         // 否则会残留上一轮的结果，导致行为树看起来像“记错状态”。
         ctx_->goal_candidates.clear();
         ctx_->rule_action_type = RuleActionType::NONE;
-        ctx_->heat_guard_active = false;
-        ctx_->power_guard_active = false;
-        ctx_->ammo_guard_active = false;
-        ctx_->supercap_guard_active = false;
         ctx_->posture_cooldown_guard_active = false;
         ctx_->rule_cmd_guard_active = false;
 
@@ -51,15 +52,20 @@ public:
 
         // 便捷状态来自原始输入的快速归纳。
         // 这些值不是底层传感器直接给出的，而是为了后面的节点判断更方便。
-        ctx_->ammo_low = (ctx_->ammo_17 < 80);
-        ctx_->need_supply = ctx_->ammo_low || (ctx_->hp < (ctx_->hp_max / 3));
-        ctx_->need_emergency_safety = false;
+        ctx_->ammo_low = UpdateHysteresis(ctx_->ammo_low, ctx_->ammo_17 < 80, ctx_->ammo_17 > 120);
+        const float hp_ratio = SafeRatio(ctx_->hp, ctx_->hp_max);
+        ctx_->need_supply =
+            UpdateHysteresis(ctx_->need_supply, ctx_->ammo_low || hp_ratio < 0.33f,
+                             (!ctx_->ammo_low) && hp_ratio > 0.45f);
+        ctx_->need_emergency_safety = !ctx_->referee_link_fresh;
         ctx_->need_rule_action = false;
 
         // 清理本轮要重新生成的解释性文本。
         ctx_->tactical_reason.clear();
         ctx_->rule_reason.clear();
         ctx_->goal_reason.clear();
+        ctx_->posture_reason.clear();
+        ctx_->spin_reason.clear();
         ctx_->executor_summary.clear();
         ctx_->last_rule_command.clear();
         ctx_->revive_cmd = SENTRY_REVIVE_CMD_NONE;

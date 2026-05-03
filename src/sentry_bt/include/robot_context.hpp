@@ -1,5 +1,6 @@
 #pragma once
 
+#include <array>
 #include <cstdint>
 #include <mutex>
 #include <string>
@@ -113,11 +114,21 @@ struct RobotContext
     float enemy_confidence{0.0f};
     float enemy_distance_m{0.0f};
     bool on_supply{false};
+    bool on_base{false};
     bool on_fortress{false};
     bool on_outpost{false};
     bool on_highground{false};
+    Posture reported_posture{Posture::MOVE};
     Posture current_posture{Posture::MOVE};
+    Posture pending_posture_target{Posture::MOVE};
+    bool posture_switch_pending{false};
     bool posture_cooldown_ok{true};
+    std::uint64_t posture_cooldown_remaining_ms{0};
+    bool referee_link_fresh{false};
+    bool sim_input_fresh{false};
+    bool health_data_degraded{false};
+    std::uint64_t referee_status_age_ms{0};
+    std::uint64_t sim_input_age_ms{0};
 
     // 由原始输入推导出的便捷状态。
     // UpdateBlackboard 和各类 Guard 节点都可以在每个 tick 内重算这些值。
@@ -164,10 +175,12 @@ struct RobotContext
     std::string tactical_reason{};
     std::string rule_reason{};
     std::string goal_reason{};
+    std::string spin_reason{};
     std::string executor_summary{};
     std::string last_nav_command{};
     std::string last_shooter_command{};
     std::string last_rule_command{};
+    std::string input_health_reason{};
 
     // 协议输出层。
     // 这些字段会被直接映射到 /gimbal_cmd 中同名字段。
@@ -189,6 +202,15 @@ struct RobotContext
     std::uint64_t last_posture_command_ms{0};
     std::uint64_t last_energy_activate_ms{0};
     std::uint64_t last_periodic_ammo_claim_ms{0};
+
+    // 姿态累计与衰减信息。
+    // 规则要求“单姿态累计超过 3 分钟后收益下降”，
+    // 所以上位机需要自己跨 tick 维护累计时长。
+    std::array<std::uint64_t, 3> posture_accumulated_ms{{0, 0, 0}};
+    std::array<bool, 3> posture_debuffed{{false, false, false}};
+    std::uint64_t posture_debuff_threshold_ms{180000};
+    std::uint64_t posture_debuff_rotate_margin_ms{15000};
+    std::string posture_reason{};
 };
 
 inline const char* TacticalStateToString(TacticalState state)
@@ -223,6 +245,71 @@ inline const char* PostureToString(Posture posture)
             return "DEFENSE";
     }
     return "MOVE";
+}
+
+inline std::uint8_t PostureToProtocolValue(Posture posture)
+{
+    switch (posture)
+    {
+        case Posture::ATTACK:
+            return 1;
+        case Posture::DEFENSE:
+            return 2;
+        case Posture::MOVE:
+            return 3;
+    }
+    return 3;
+}
+
+inline std::size_t PostureToIndex(Posture posture)
+{
+    switch (posture)
+    {
+        case Posture::ATTACK:
+            return 0;
+        case Posture::DEFENSE:
+            return 1;
+        case Posture::MOVE:
+            return 2;
+    }
+    return 2;
+}
+
+inline std::uint64_t GetAccumulatedPostureMs(const RobotContext& ctx, Posture posture)
+{
+    return ctx.posture_accumulated_ms[PostureToIndex(posture)];
+}
+
+inline bool IsPostureDebuffed(const RobotContext& ctx, Posture posture)
+{
+    return ctx.posture_debuffed[PostureToIndex(posture)];
+}
+
+inline std::uint64_t RemainingBeforePostureDebuff(const RobotContext& ctx, Posture posture)
+{
+    const auto used_ms = GetAccumulatedPostureMs(ctx, posture);
+    return (used_ms >= ctx.posture_debuff_threshold_ms) ? 0
+                                                        : (ctx.posture_debuff_threshold_ms -
+                                                           used_ms);
+}
+
+inline bool ParsePostureProtocolValue(std::uint8_t value, Posture& posture)
+{
+    switch (value)
+    {
+        case 1:
+            posture = Posture::ATTACK;
+            return true;
+        case 2:
+            posture = Posture::DEFENSE;
+            return true;
+        case 3:
+            posture = Posture::MOVE;
+            return true;
+        default:
+            posture = Posture::MOVE;
+            return false;
+    }
 }
 
 inline const char* FirePolicyToString(FirePolicy policy)
@@ -287,6 +374,83 @@ inline const char* RuleActionTypeToString(RuleActionType type)
             return "SWITCH_POSTURE";
     }
     return "NONE";
+}
+
+inline std::uint8_t TacticalStateToProtocolValue(TacticalState state)
+{
+    switch (state)
+    {
+        case TacticalState::HOLD:
+            return 1;
+        case TacticalState::ENGAGE:
+            return 2;
+        case TacticalState::RETREAT:
+            return 3;
+        case TacticalState::RESUPPLY:
+            return 4;
+        case TacticalState::SEARCH:
+            return 5;
+        case TacticalState::REPOSITION:
+            return 6;
+    }
+    return 0;
+}
+
+inline std::uint8_t FirePolicyToProtocolValue(FirePolicy policy)
+{
+    switch (policy)
+    {
+        case FirePolicy::HOLD_FIRE:
+            return 0;
+        case FirePolicy::CONSERVATIVE:
+            return 1;
+        case FirePolicy::NORMAL:
+            return 2;
+        case FirePolicy::AGGRESSIVE:
+            return 3;
+    }
+    return 0;
+}
+
+inline std::uint8_t SpinModeToProtocolValue(SpinMode mode)
+{
+    return mode == SpinMode::ON ? 1 : 0;
+}
+
+inline std::uint8_t SupercapModeToProtocolValue(SupercapMode mode)
+{
+    switch (mode)
+    {
+        case SupercapMode::OFF:
+            return 0;
+        case SupercapMode::KEEP:
+            return 1;
+        case SupercapMode::BURST:
+            return 2;
+    }
+    return 0;
+}
+
+inline std::uint8_t RuleActionTypeToProtocolValue(RuleActionType type)
+{
+    switch (type)
+    {
+        case RuleActionType::NONE:
+            return 0;
+        case RuleActionType::EXCHANGE_AMMO_AT_POINT:
+            return 1;
+        case RuleActionType::REMOTE_AMMO:
+            return 2;
+        case RuleActionType::REMOTE_HP:
+            return 3;
+        case RuleActionType::ACTIVATE_ENERGY:
+            return 7;
+        case RuleActionType::CLAIM_PERIODIC_AMMO:
+            return 0;
+        case RuleActionType::SWITCH_POSTURE:
+            return 6;
+    }
+    return 0;
 }
 
 inline bool ParsePosture(std::string_view value, Posture& posture)

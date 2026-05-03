@@ -1,0 +1,40 @@
+initial_status:
+  game_progress: 4
+  stage_remain_time: 330
+  current_hp: 400
+  maximum_hp: 400
+  shooter_barrel_cooling_value: 30
+  shooter_barrel_heat_limit: 260
+  chassis_power_limit: 100
+  projectile_allowance_17mm: 180
+  remaining_gold_coin: 200
+  is_disengaged: 1
+  sentry_posture: 3
+  can_activate_energy_mechanism: 0
+
+initial_sim_input:
+  enemy_in_view: false
+  enemy_confidence: 0.0
+  enemy_distance_m: 12.0
+  on_supply: false
+  on_fortress: false
+  on_outpost: false
+  on_highground: true
+  can_claim_periodic_ammo: false
+  posture_switch_requested: false
+
+phases:
+  - duration_ms: 2500
+    status:
+      can_activate_energy_mechanism: 0
+  - duration_ms: 2500
+    status:
+      can_activate_energy_mechanism: 1
+  - duration_ms: 3000
+    sim_input:
+      enemy_in_view: true
+      enemy_confidence: 0.84
+      enemy_distance_m: 8.0
+  - duration_ms: 2500
+    status:
+      can_activate_energy_mechanism: 1

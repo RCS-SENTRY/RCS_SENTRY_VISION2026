@@ -38,6 +38,7 @@
   <exec_depend>rm_hik_driver</exec_depend>
   <exec_depend>rm_hw_bridge</exec_depend>
   <exec_depend>rm_interfaces</exec_depend>
+  <exec_depend>rm_sentry_decision</exec_depend>
   <exec_depend>rm_vision</exec_depend>
   <exec_depend>sensor_scan_generation</exec_depend>
   <exec_depend>sentry_bt</exec_depend>

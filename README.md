@@ -26,6 +26,16 @@ PB2025:
 
 默认模式仍是 PB2025 单雷达稳定主链：`/livox/lidar`、`/livox/imu`、Point-LIO、terrain、local/global costmap 均保持 PB2025 接管版原始语义。
 
+## 哨兵决策意图层
+
+RM2026 sentry behavior tree 已按意图层接入：`sentry_bt` 只发布
+`/sentry/intent` 和 `/sentry_bt/debug`，不直接发布 `/gimbal_cmd` 或
+`/nav_cmd`。`rm_sentry_decision` 中的 command mux 合成最终
+`/gimbal_cmd`，goal executor 只向 Nav2 发送 `NavigateToPose` goal。
+
+详细边界、姿态编码、规则字段限制和调试命令见
+[docs/sentry_decision_integration.md](docs/sentry_decision_integration.md)。
+
 第二雷达目前只作为可选速度安全壳：
 
 - 双雷达 safety 模式使用单个 `livox_ros_driver2` 进程，按雷达 IP 分流 CustomMsg topic。

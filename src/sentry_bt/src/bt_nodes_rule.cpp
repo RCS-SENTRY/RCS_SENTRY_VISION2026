@@ -21,43 +21,63 @@ int ComputeRemoteHpCost(const RobotContext& ctx)
     return 50 + (rounded_block * 20);
 }
 
+bool CooldownElapsed(std::uint64_t now_ms, std::uint64_t last_ms, std::uint64_t cooldown_ms)
+{
+    return last_ms == 0 || now_ms < last_ms || (now_ms - last_ms) >= cooldown_ms;
+}
+
 // 规则动作优先级判定函数。
 // 顺序本身就代表优先级：越靠前，越先抢占执行权。
 // 因此后续如果你要改优先级，不一定要改很多节点，
 // 很可能只需要重排这里的判断顺序。
 RuleActionType EvaluateRuleAction(const RobotContext& ctx, std::string& reason)
 {
+    const bool on_projectile_exchange_point =
+        ctx.on_supply || ctx.on_base || ctx.on_outpost || ctx.on_fortress;
+
     if (!ctx.match_started)
     {
         reason = "比赛尚未进入正式对抗阶段，不触发规则动作。";
         return RuleActionType::NONE;
     }
-    if (ctx.can_activate_energy_mechanism)
+    if (!ctx.referee_link_fresh)
+    {
+        reason = "裁判/底盘状态输入已超时，不发送裁判侧动作。";
+        return RuleActionType::NONE;
+    }
+    if (ctx.is_dead)
+    {
+        reason = "当前处于死亡态，交由复活分支处理，暂停其它规则动作。";
+        return RuleActionType::NONE;
+    }
+    if (ctx.can_activate_energy_mechanism &&
+        CooldownElapsed(ctx.now_ms, ctx.last_energy_activate_ms, kPulseCooldownMs))
     {
         reason = "规则命令要求激活能量机关。";
         return RuleActionType::ACTIVATE_ENERGY;
     }
-    if (ctx.is_disengaged && ctx.hp < (ctx.hp_max / 3) && ctx.gold >= ComputeRemoteHpCost(ctx))
+    if (ctx.is_disengaged && ctx.hp < (ctx.hp_max / 3) && ctx.gold >= ComputeRemoteHpCost(ctx) &&
+        CooldownElapsed(ctx.now_ms, ctx.last_remote_hp_request_ms, kRemoteRequestCooldownMs))
     {
         reason = "当前处于脱战且血量偏低，满足远程补血条件。";
         return RuleActionType::REMOTE_HP;
     }
-    if (ctx.can_claim_periodic_ammo)
-    {
-        reason = "当前可领取周期补弹奖励。";
-        return RuleActionType::CLAIM_PERIODIC_AMMO;
-    }
+    // RM2026 0x0120 does not contain claim_periodic_ammo. Keep the first
+    // upper-computer integration phase silent for this local extension.
     if (ctx.posture_switch_requested)
     {
         reason = "外部命令请求切换姿态。";
         return RuleActionType::SWITCH_POSTURE;
     }
-    if (ctx.ammo_low && ctx.team_17mm_exchange_remain >= 10)
+    if (ctx.ammo_low && on_projectile_exchange_point && ctx.team_17mm_exchange_remain >= 10 &&
+        ctx.gold >= 10)
     {
-        reason = "当前弹药不足，可预先抬高非远程补弹累计目标值。";
+        reason = "当前弹药不足且位于合法补弹点，可抬高非远程补弹累计目标值。";
         return RuleActionType::EXCHANGE_AMMO_AT_POINT;
     }
-    if (ctx.is_disengaged && ctx.ammo_low && ctx.gold >= 150)
+    if (ctx.is_disengaged && ctx.ammo_low && ctx.gold >= 150 &&
+        ctx.team_17mm_exchange_remain >= 100 &&
+        CooldownElapsed(ctx.now_ms, ctx.last_remote_ammo_request_ms, kRemoteRequestCooldownMs))
     {
         reason = "当前处于脱战且弹药不足，满足远程补弹条件。";
         return RuleActionType::REMOTE_AMMO;
@@ -147,8 +167,9 @@ public:
         ctx_->last_rule_command = "WaitRevive：保持等待，直到复活条件发生变化。";
 
         // onStart 在节点第一次进入 RUNNING 时调用。
-        // 如果这一刻其实已经不死了，也可以直接返回 SUCCESS。
-        return ctx_->is_dead ? BT::NodeStatus::RUNNING : BT::NodeStatus::SUCCESS;
+        // 等待复活也需要让后续 executor 层继续发布 WAIT_REVIVE 和停火输出，
+        // 所以这里不保持 RUNNING，以免截断主树后半段。
+        return BT::NodeStatus::SUCCESS;
     }
 
     BT::NodeStatus onRunning() override
@@ -156,8 +177,7 @@ public:
         std::lock_guard<std::mutex> lock(ctx_->mtx);
         ctx_->revive_cmd = SENTRY_REVIVE_CMD_WAIT;
 
-        // 只要还处于死亡态，就保持 RUNNING。
-        return ctx_->is_dead ? BT::NodeStatus::RUNNING : BT::NodeStatus::SUCCESS;
+        return BT::NodeStatus::SUCCESS;
     }
 
     void onHalted() override
@@ -204,12 +224,18 @@ public:
         {
             return BT::NodeStatus::FAILURE;
         }
+        if (!(ctx_->on_supply || ctx_->on_base || ctx_->on_outpost || ctx_->on_fortress) ||
+            ctx_->gold < 10)
+        {
+            return BT::NodeStatus::FAILURE;
+        }
 
         if (ctx_->ammo_exchange_target_total <=
             static_cast<std::uint16_t>(ctx_->exchanged_projectile_allowance))
         {
             int delta = (ctx_->ammo_17 < 40) ? 100 : 50;
             delta = std::min(delta, ctx_->team_17mm_exchange_remain);
+            delta = std::min(delta, ctx_->gold);
             delta = (delta / 10) * 10;
             if (delta <= 0)
             {
@@ -239,7 +265,12 @@ public:
         {
             return BT::NodeStatus::FAILURE;
         }
-        if ((ctx_->now_ms - ctx_->last_remote_ammo_request_ms) < kRemoteRequestCooldownMs)
+        if (ctx_->team_17mm_exchange_remain < 100)
+        {
+            return BT::NodeStatus::FAILURE;
+        }
+        if (!CooldownElapsed(
+                ctx_->now_ms, ctx_->last_remote_ammo_request_ms, kRemoteRequestCooldownMs))
         {
             return BT::NodeStatus::FAILURE;
         }
@@ -264,7 +295,8 @@ public:
         {
             return BT::NodeStatus::FAILURE;
         }
-        if ((ctx_->now_ms - ctx_->last_remote_hp_request_ms) < kRemoteRequestCooldownMs)
+        if (!CooldownElapsed(
+                ctx_->now_ms, ctx_->last_remote_hp_request_ms, kRemoteRequestCooldownMs))
         {
             return BT::NodeStatus::FAILURE;
         }
@@ -288,7 +320,7 @@ public:
         {
             return BT::NodeStatus::FAILURE;
         }
-        if ((ctx_->now_ms - ctx_->last_energy_activate_ms) < kPulseCooldownMs)
+        if (!CooldownElapsed(ctx_->now_ms, ctx_->last_energy_activate_ms, kPulseCooldownMs))
         {
             return BT::NodeStatus::FAILURE;
         }
@@ -312,7 +344,7 @@ public:
         {
             return BT::NodeStatus::FAILURE;
         }
-        if ((ctx_->now_ms - ctx_->last_periodic_ammo_claim_ms) < kPulseCooldownMs)
+        if (!CooldownElapsed(ctx_->now_ms, ctx_->last_periodic_ammo_claim_ms, kPulseCooldownMs))
         {
             return BT::NodeStatus::FAILURE;
         }

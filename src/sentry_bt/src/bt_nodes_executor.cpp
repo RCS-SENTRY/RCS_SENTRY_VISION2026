@@ -15,16 +15,7 @@ namespace
 {
 std::uint8_t PostureToProtocol(Posture posture)
 {
-    switch (posture)
-    {
-        case Posture::ATTACK:
-            return SENTRY_POSTURE_ATTACK;
-        case Posture::DEFENSE:
-            return SENTRY_POSTURE_DEFENSE;
-        case Posture::MOVE:
-            return SENTRY_POSTURE_MOVE;
-    }
-    return SENTRY_POSTURE_MOVE;
+    return PostureToProtocolValue(posture);
 }
 
 // 对火力策略做上限裁剪。
@@ -58,6 +49,136 @@ std::string DefaultGoalForState(TacticalState state)
     return "SAFE_HOLD";
 }
 
+float BasePostureScore(const RobotContext& ctx, Posture posture)
+{
+    const float hp_ratio = SafeRatio(ctx.hp, ctx.hp_max);
+    const float heat_ratio = SafeRatio(ctx.heat, ctx.heat_limit);
+
+    switch (ctx.tactical_state)
+    {
+        case TacticalState::RETREAT:
+            return (posture == Posture::MOVE) ? 1.00f
+                   : (posture == Posture::DEFENSE) ? 0.35f
+                                                  : 0.10f;
+        case TacticalState::RESUPPLY:
+            return (posture == Posture::MOVE) ? 1.00f
+                   : (posture == Posture::DEFENSE) ? (ctx.enemy_in_view ? 0.55f : 0.40f)
+                                                  : 0.08f;
+        case TacticalState::HOLD:
+            return (posture == Posture::DEFENSE) ? 1.00f
+                   : (posture == Posture::MOVE) ? 0.72f
+                                                : 0.38f;
+        case TacticalState::ENGAGE:
+            if (posture == Posture::ATTACK)
+            {
+                return 1.00f;
+            }
+            if (posture == Posture::MOVE)
+            {
+                return (ctx.enemy_distance_m < 4.0f || heat_ratio > 0.80f) ? 0.88f : 0.72f;
+            }
+            return (hp_ratio < 0.45f || heat_ratio > 0.78f) ? 0.82f : 0.56f;
+        case TacticalState::SEARCH:
+            return (posture == Posture::MOVE) ? 1.00f
+                   : (posture == Posture::ATTACK) ? 0.24f
+                                                  : 0.18f;
+        case TacticalState::REPOSITION:
+            return (posture == Posture::MOVE) ? 1.00f
+                   : (posture == Posture::ATTACK) ? (ctx.enemy_in_view ? 0.42f : 0.24f)
+                                                  : 0.26f;
+    }
+    return (posture == Posture::MOVE) ? 1.00f : 0.20f;
+}
+
+float PostureDebuffPenalty(const RobotContext& ctx, Posture posture)
+{
+    if (IsPostureDebuffed(ctx, posture))
+    {
+        return 0.55f;
+    }
+
+    if (ctx.posture_debuff_rotate_margin_ms == 0)
+    {
+        return 0.0f;
+    }
+
+    return (RemainingBeforePostureDebuff(ctx, posture) <= ctx.posture_debuff_rotate_margin_ms)
+               ? 0.18f
+               : 0.0f;
+}
+
+bool HasExplicitPostureOverride(const RobotContext& ctx)
+{
+    return ctx.rule_action_type == RuleActionType::SWITCH_POSTURE || ctx.posture_switch_requested;
+}
+
+Posture ExplicitPostureTarget(const RobotContext& ctx)
+{
+    return (ctx.current_posture == Posture::DEFENSE) ? Posture::ATTACK : Posture::DEFENSE;
+}
+
+Posture SelectPostureWithDebuffAwareness(const RobotContext& ctx, std::string& reason)
+{
+    struct Candidate
+    {
+        Posture posture{Posture::MOVE};
+        float score{-1.0f};
+    };
+
+    Candidate best{};
+    const Posture candidates[] = {Posture::ATTACK, Posture::DEFENSE, Posture::MOVE};
+    for (const auto posture : candidates)
+    {
+        float score = BasePostureScore(ctx, posture) - PostureDebuffPenalty(ctx, posture);
+        if (posture == ctx.preferred_posture)
+        {
+            score += 0.12f;
+        }
+        if (posture == ctx.current_posture)
+        {
+            score += 0.05f;
+        }
+        if (score > best.score)
+        {
+            best = Candidate{posture, score};
+        }
+    }
+
+    if (best.posture == ctx.preferred_posture)
+    {
+        if (IsPostureDebuffed(ctx, ctx.preferred_posture))
+        {
+            reason = std::string("首选姿态 ") + PostureToString(ctx.preferred_posture) +
+                     " 已衰减，但当前战术收益仍高于备选姿态，继续保持。";
+        }
+        else if (ctx.posture_debuff_rotate_margin_ms > 0 &&
+                 RemainingBeforePostureDebuff(ctx, ctx.preferred_posture) <=
+                     ctx.posture_debuff_rotate_margin_ms)
+        {
+            reason = std::string("首选姿态 ") + PostureToString(ctx.preferred_posture) +
+                     " 已接近衰减阈值，但当前战术仍以该姿态收益最高。";
+        }
+        else
+        {
+            reason = std::string("首选姿态 ") + PostureToString(ctx.preferred_posture) +
+                     " 尚未触发明显衰减风险，按战术偏好执行。";
+        }
+    }
+    else if (IsPostureDebuffed(ctx, ctx.preferred_posture))
+    {
+        reason = std::string("首选姿态 ") + PostureToString(ctx.preferred_posture) +
+                 " 已累计超过衰减阈值，改用 " + PostureToString(best.posture) +
+                 " 以保留未衰减姿态收益。";
+    }
+    else
+    {
+        reason = std::string("首选姿态 ") + PostureToString(ctx.preferred_posture) +
+                 " 接近衰减阈值，预留轮换并暂改用 " + PostureToString(best.posture) + "。";
+    }
+
+    return best.posture;
+}
+
 // 姿态执行收口节点。
 // tactical 可能希望切姿态，但如果当前还在冷却，就只能沿用 current_posture。
 class ApplyPostureDecisionNode : public ContextSyncActionNode
@@ -69,18 +190,55 @@ public:
     {
         std::lock_guard<std::mutex> lock(ctx_->mtx);
 
-        if (ctx_->is_dead)
+        if (ctx_->is_dead || !ctx_->referee_link_fresh || !ctx_->match_started)
         {
             // 死亡时不应继续切姿态，保持当前值即可。
             ctx_->desired_posture = ctx_->current_posture;
+            ctx_->posture_reason = ctx_->is_dead
+                                       ? "死亡状态下冻结姿态输出，保持当前确认姿态。"
+                                       : (!ctx_->referee_link_fresh
+                                              ? "输入链路超时，冻结姿态输出并等待状态恢复。"
+                                              : "比赛未开始，冻结姿态输出并保持待机。");
             return BT::NodeStatus::SUCCESS;
         }
 
+        if (ctx_->need_emergency_safety && ctx_->pending_posture_target != Posture::MOVE)
+        {
+            ctx_->desired_posture = Posture::MOVE;
+            ctx_->posture_reason =
+                "紧急安全分支已接管，忽略非移动姿态的待确认目标，先按 MOVE 输出。";
+            return BT::NodeStatus::SUCCESS;
+        }
+
+        if (ctx_->posture_switch_pending)
+        {
+            ctx_->desired_posture = ctx_->pending_posture_target;
+            ctx_->posture_reason = std::string("已有姿态切换待反馈确认，继续等待目标姿态 ") +
+                                   PostureToString(ctx_->pending_posture_target) + " 生效。";
+            return BT::NodeStatus::SUCCESS;
+        }
+
+        Posture selected_posture = ctx_->preferred_posture;
+        if (HasExplicitPostureOverride(*ctx_))
+        {
+            selected_posture = ExplicitPostureTarget(*ctx_);
+            ctx_->posture_reason = std::string("当前存在显式姿态切换请求，直接请求切换到 ") +
+                                   PostureToString(selected_posture) + "。";
+        }
+        else
+        {
+            selected_posture = SelectPostureWithDebuffAwareness(*ctx_, ctx_->posture_reason);
+        }
+
         // 冷却期未结束时，不允许采纳新的 preferred_posture。
-        ctx_->desired_posture = ctx_->posture_cooldown_guard_active ? ctx_->current_posture
-                                                                    : ctx_->preferred_posture;
-        if (ctx_->desired_posture != ctx_->current_posture && ctx_->posture_cooldown_ok &&
-            (ctx_->now_ms - ctx_->last_posture_command_ms) >= 5000U)
+        ctx_->desired_posture =
+            ctx_->posture_cooldown_guard_active ? ctx_->current_posture : selected_posture;
+        if (ctx_->posture_cooldown_guard_active && selected_posture != ctx_->current_posture)
+        {
+            ctx_->posture_reason +=
+                " 但姿态切换仍在冷却期，暂时维持当前姿态等待冷却结束。";
+        }
+        if (ctx_->desired_posture != ctx_->current_posture && ctx_->posture_cooldown_ok)
         {
             ctx_->posture_cmd_referee = PostureToProtocol(ctx_->desired_posture);
             ctx_->last_posture_command_ms = ctx_->now_ms;
@@ -101,7 +259,7 @@ public:
     {
         std::lock_guard<std::mutex> lock(ctx_->mtx);
 
-        if (ctx_->is_dead)
+        if (ctx_->is_dead || !ctx_->referee_link_fresh || !ctx_->match_started)
         {
             ctx_->desired_fire_policy = FirePolicy::HOLD_FIRE;
             return BT::NodeStatus::SUCCESS;
@@ -144,13 +302,29 @@ public:
     {
         std::lock_guard<std::mutex> lock(ctx_->mtx);
 
-        if (ctx_->is_dead || ctx_->power_guard_active || ctx_->supercap_guard_active)
+        if (ctx_->is_dead || !ctx_->referee_link_fresh || !ctx_->match_started ||
+            ctx_->power_guard_active || ctx_->supercap_guard_active)
         {
             ctx_->desired_spin_mode = SpinMode::OFF;
+            ctx_->spin_reason = ctx_->is_dead
+                                    ? "执行层关闭小陀螺：机器人已死亡。"
+                                    : (!ctx_->referee_link_fresh
+                                           ? "执行层关闭小陀螺：输入链路超时。"
+                                           : (!ctx_->match_started
+                                                  ? "执行层关闭小陀螺：比赛未开始。"
+                                                  : (ctx_->power_guard_active
+                                                         ? "执行层关闭小陀螺：底盘功率守卫触发。"
+                                                         : "执行层关闭小陀螺：超级电容守卫触发。")));
             return BT::NodeStatus::SUCCESS;
         }
 
         ctx_->desired_spin_mode = ctx_->preferred_spin_mode;
+        if (ctx_->spin_reason.empty())
+        {
+            ctx_->spin_reason = ctx_->desired_spin_mode == SpinMode::ON
+                                    ? "执行层采纳战术偏好，启用小陀螺。"
+                                    : "执行层采纳战术偏好，关闭小陀螺。";
+        }
         return BT::NodeStatus::SUCCESS;
     }
 };
@@ -166,7 +340,8 @@ public:
     {
         std::lock_guard<std::mutex> lock(ctx_->mtx);
 
-        if (ctx_->is_dead || ctx_->supercap_guard_active)
+        if (ctx_->is_dead || !ctx_->referee_link_fresh || !ctx_->match_started ||
+            ctx_->supercap_guard_active)
         {
             ctx_->desired_supercap_mode = SupercapMode::OFF;
             return BT::NodeStatus::SUCCESS;
@@ -193,7 +368,23 @@ public:
     {
         std::lock_guard<std::mutex> lock(ctx_->mtx);
 
-        if (ctx_->is_dead)
+        if (!ctx_->referee_link_fresh)
+        {
+            ctx_->desired_goal = "SAFE_HOLD";
+            if (ctx_->goal_reason.empty())
+            {
+                ctx_->goal_reason = ctx_->input_health_reason;
+            }
+        }
+        else if (!ctx_->match_started)
+        {
+            ctx_->desired_goal = "SAFE_HOLD";
+            if (ctx_->goal_reason.empty())
+            {
+                ctx_->goal_reason = "比赛未开始，目标点冻结在安全待机。";
+            }
+        }
+        else if (ctx_->is_dead)
         {
             // 死亡时不再下发真实目标点，统一停留在等待复活状态。
             ctx_->desired_goal = "WAIT_REVIVE";
@@ -212,9 +403,15 @@ public:
         std::ostringstream oss;
         oss << "goal=" << ctx_->desired_goal
             << ", posture=" << PostureToString(ctx_->desired_posture)
+            << ", posture_reason=" << ctx_->posture_reason
             << ", fire=" << FirePolicyToString(ctx_->desired_fire_policy)
             << ", spin=" << SpinModeToString(ctx_->desired_spin_mode)
+            << ", spin_reason=" << ctx_->spin_reason
             << ", supercap=" << SupercapModeToString(ctx_->desired_supercap_mode)
+            << ", referee_fresh=" << (ctx_->referee_link_fresh ? "true" : "false")
+            << ", status_age_ms=" << ctx_->referee_status_age_ms
+            << ", sim_fresh=" << (ctx_->sim_input_fresh ? "true" : "false")
+            << ", sim_age_ms=" << ctx_->sim_input_age_ms
             << ", ammo_target_total=" << ctx_->ammo_exchange_target_total
             << ", revive_cmd=" << static_cast<int>(ctx_->revive_cmd)
             << ", remote_ammo_inc=" << static_cast<int>(ctx_->remote_ammo_req_inc)

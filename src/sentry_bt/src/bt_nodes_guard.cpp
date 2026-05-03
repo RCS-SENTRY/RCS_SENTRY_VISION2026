@@ -1,5 +1,7 @@
 #include "bt_nodes_guard.hpp"
 
+#include <algorithm>
+
 #include "bt_node_common.hpp"
 
 // guard 节点文件负责“硬约束检测”。
@@ -12,6 +14,23 @@
 
 namespace
 {
+bool UpdateHysteresis(bool previous, bool enter, bool exit)
+{
+    return previous ? !exit : enter;
+}
+
+int ComputeRemoteHpCost(const RobotContext& ctx)
+{
+    const int elapsed = std::clamp(420 - ctx.stage_remain_time, 0, 420);
+    const int rounded_block = (elapsed + 59) / 60;
+    return 50 + (rounded_block * 20);
+}
+
+bool CooldownElapsed(std::uint64_t now_ms, std::uint64_t last_ms, std::uint64_t cooldown_ms)
+{
+    return last_ms == 0 || now_ms < last_ms || (now_ms - last_ms) >= cooldown_ms;
+}
+
 // 热量守卫。
 // 一旦枪口热量接近上限，就把 heat_guard_active 拉高。
 // 这里阈值写成 0.92，是一个启发式占位值，后续很可能要结合实际控热策略改。
@@ -23,7 +42,9 @@ public:
     BT::NodeStatus tick() override
     {
         std::lock_guard<std::mutex> lock(ctx_->mtx);
-        ctx_->heat_guard_active = SafeRatio(ctx_->heat, ctx_->heat_limit) > 0.92f;
+        const float heat_ratio = SafeRatio(ctx_->heat, ctx_->heat_limit);
+        ctx_->heat_guard_active =
+            UpdateHysteresis(ctx_->heat_guard_active, heat_ratio > 0.92f, heat_ratio < 0.78f);
         return ctx_->heat_guard_active ? BT::NodeStatus::FAILURE : BT::NodeStatus::SUCCESS;
     }
 };
@@ -39,8 +60,9 @@ public:
     BT::NodeStatus tick() override
     {
         std::lock_guard<std::mutex> lock(ctx_->mtx);
+        const float power_ratio = ctx_->chassis_power_now / std::max(1.0f, ctx_->chassis_power_limit);
         ctx_->power_guard_active =
-            ctx_->chassis_power_now > (0.95f * ctx_->chassis_power_limit);
+            UpdateHysteresis(ctx_->power_guard_active, power_ratio > 0.95f, power_ratio < 0.85f);
         return ctx_->power_guard_active ? BT::NodeStatus::FAILURE : BT::NodeStatus::SUCCESS;
     }
 };
@@ -56,7 +78,7 @@ public:
     BT::NodeStatus tick() override
     {
         std::lock_guard<std::mutex> lock(ctx_->mtx);
-        ctx_->ammo_low = (ctx_->ammo_17 < 80);
+        ctx_->ammo_low = UpdateHysteresis(ctx_->ammo_low, ctx_->ammo_17 < 80, ctx_->ammo_17 > 120);
         ctx_->ammo_guard_active = ctx_->ammo_low;
         return ctx_->ammo_guard_active ? BT::NodeStatus::FAILURE : BT::NodeStatus::SUCCESS;
     }
@@ -72,7 +94,9 @@ public:
     BT::NodeStatus tick() override
     {
         std::lock_guard<std::mutex> lock(ctx_->mtx);
-        ctx_->supercap_guard_active = ctx_->supercap_soc < 0.10f;
+        ctx_->supercap_guard_active =
+            UpdateHysteresis(ctx_->supercap_guard_active, ctx_->supercap_soc < 0.10f,
+                             ctx_->supercap_soc > 0.18f);
         return ctx_->supercap_guard_active ? BT::NodeStatus::FAILURE : BT::NodeStatus::SUCCESS;
     }
 };
@@ -111,14 +135,28 @@ public:
         std::lock_guard<std::mutex> lock(ctx_->mtx);
 
         const bool can_exchange_at_point =
-            ctx_->ammo_low && (ctx_->on_supply || ctx_->on_outpost || ctx_->on_fortress);
-        const bool can_remote_ammo = ctx_->ammo_low && ctx_->gold >= 50;
-        const bool can_remote_hp = ctx_->hp < (ctx_->hp_max / 3) && ctx_->gold >= 80;
+            ctx_->ammo_low &&
+            (ctx_->on_supply || ctx_->on_base || ctx_->on_outpost || ctx_->on_fortress) &&
+            ctx_->team_17mm_exchange_remain >= 10 && ctx_->gold >= 10;
+        const bool can_remote_ammo =
+            ctx_->is_disengaged && ctx_->ammo_low && ctx_->gold >= 150 &&
+            ctx_->team_17mm_exchange_remain >= 100 &&
+            CooldownElapsed(ctx_->now_ms, ctx_->last_remote_ammo_request_ms, 6000U);
+        const bool can_remote_hp =
+            ctx_->is_disengaged && ctx_->hp < (ctx_->hp_max / 3) &&
+            ctx_->gold >= ComputeRemoteHpCost(*ctx_) &&
+            CooldownElapsed(ctx_->now_ms, ctx_->last_remote_hp_request_ms, 6000U);
+        const bool can_activate_energy =
+            ctx_->can_activate_energy_mechanism &&
+            CooldownElapsed(ctx_->now_ms, ctx_->last_energy_activate_ms, 1000U);
+        const bool can_claim_periodic_ammo =
+            ctx_->can_claim_periodic_ammo &&
+            CooldownElapsed(ctx_->now_ms, ctx_->last_periodic_ammo_claim_ms, 1000U);
 
-        ctx_->rule_cmd_guard_active = can_exchange_at_point || can_remote_ammo ||
-                                      can_remote_hp || ctx_->can_activate_energy_mechanism ||
-                                      ctx_->can_claim_periodic_ammo ||
-                                      ctx_->posture_switch_requested;
+        ctx_->rule_cmd_guard_active =
+            ctx_->referee_link_fresh &&
+            (can_exchange_at_point || can_remote_ammo || can_remote_hp ||
+             can_activate_energy || can_claim_periodic_ammo || ctx_->posture_switch_requested);
         ctx_->need_rule_action = ctx_->rule_cmd_guard_active;
 
         return ctx_->rule_cmd_guard_active ? BT::NodeStatus::FAILURE
@@ -148,14 +186,18 @@ public:
         }
 
         const float hp_ratio = SafeRatio(ctx_->hp, ctx_->hp_max);
-        const bool need_safety = ctx_->heat_guard_active || ctx_->power_guard_active ||
+        const bool need_safety = !ctx_->referee_link_fresh || ctx_->heat_guard_active ||
+                                 ctx_->power_guard_active ||
                                  ctx_->supercap_guard_active ||
                                  ((hp_ratio < 0.20f) && ctx_->enemy_in_view);
 
         ctx_->need_emergency_safety = need_safety;
         if (need_safety)
         {
-            ctx_->tactical_reason = "进入紧急安全分支，优先级高于常规战术决策。";
+            ctx_->tactical_reason =
+                ctx_->referee_link_fresh
+                    ? "进入紧急安全分支，优先级高于常规战术决策。"
+                    : ctx_->input_health_reason;
         }
         return need_safety ? BT::NodeStatus::SUCCESS : BT::NodeStatus::FAILURE;
     }
@@ -175,12 +217,23 @@ public:
 
         // 这里的策略故意偏保守。
         // 一旦硬约束触发到危险程度，就优先保命，并主动放弃可选动作。
+        ctx_->tactical_state = TacticalState::RETREAT;
         ctx_->preferred_posture = Posture::MOVE;
         ctx_->preferred_fire_policy = FirePolicy::HOLD_FIRE;
-        ctx_->preferred_spin_mode = SpinMode::OFF;
+        ctx_->preferred_spin_mode =
+            (ctx_->referee_link_fresh && ctx_->enemy_in_view && !ctx_->power_guard_active &&
+             !ctx_->supercap_guard_active)
+                ? SpinMode::ON
+                : SpinMode::OFF;
         ctx_->preferred_supercap_mode = SupercapMode::OFF;
-        ctx_->preferred_goal = "SAFE_RETREAT_A";
-        ctx_->goal_reason = "硬约束触发后，选择预设的安全撤退点作为回退目标。";
+        ctx_->preferred_goal = ctx_->referee_link_fresh ? "SAFE_RETREAT_A" : "SAFE_HOLD";
+        ctx_->goal_reason =
+            ctx_->referee_link_fresh ? "硬约束触发后，选择预设的安全撤退点作为回退目标。"
+                                     : "输入链路超时，停止主动机动并保持安全点。";
+        ctx_->spin_reason =
+            ctx_->preferred_spin_mode == SpinMode::ON
+                ? "紧急安全分支中仍有敌情，且功率/电容守卫未触发，撤退时保持小陀螺。"
+                : "紧急安全分支关闭小陀螺，优先保证功率、电容或链路安全。";
         return BT::NodeStatus::SUCCESS;
     }
 };

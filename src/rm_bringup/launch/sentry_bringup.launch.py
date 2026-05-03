@@ -48,12 +48,15 @@ def generate_launch_description():
     vision_dir = get_package_share_directory("rm_vision")
     autoaim_dir = get_package_share_directory("rm_autoaim")
     bringup_dir = get_package_share_directory("rm_bringup")
+    sentry_decision_dir = get_package_share_directory("rm_sentry_decision")
 
     hw_bridge_params = os.path.join(hw_bridge_dir, "config", "params.yaml")
     hik_params = os.path.join(hik_driver_dir, "config", "params.yaml")
     vision_params = os.path.join(vision_dir, "config", "params.yaml")
     autoaim_params = os.path.join(autoaim_dir, "config", "params.yaml")
     pb_nav_launch = os.path.join(bringup_dir, "launch", "sentry_pb2025_takeover.launch.py")
+    sentry_goals_default = os.path.join(
+        sentry_decision_dir, "config", "sentry_goals.yaml")
 
     debug_no_serial = _truthy("debug_no_serial")
     serial_enabled = _and(_truthy("use_serial"), _falsey("debug_no_serial"))
@@ -61,7 +64,15 @@ def generate_launch_description():
     delayed_vision_enabled = _and(serial_enabled, vision_stack_enabled)
     immediate_vision_enabled = _and(_or(_falsey("use_serial"), debug_no_serial), vision_stack_enabled)
     navigation_enabled = _and(_or(_truthy("enable_navigation"), _truthy("navigation_only")), _falsey("vision_only"))
-    decision_enabled = _and(_truthy("enable_decision"), _falsey("navigation_only"), _falsey("vision_only"))
+    decision_enabled = _and(
+        _truthy("enable_decision"),
+        _truthy("enable_sentry_decision"),
+        _falsey("navigation_only"),
+        _falsey("vision_only"),
+    )
+    command_mux_enabled = _and(_truthy("enable_sentry_command_mux"), _falsey("navigation_only"))
+    command_mux_disabled = _falsey("enable_sentry_command_mux")
+    goal_executor_enabled = _truthy("enable_sentry_goal_executor")
 
     return LaunchDescription([
         DeclareLaunchArgument("use_serial", default_value="true"),
@@ -73,6 +84,13 @@ def generate_launch_description():
         DeclareLaunchArgument("enable_navigation", default_value="true"),
         DeclareLaunchArgument("enable_vision", default_value="true"),
         DeclareLaunchArgument("enable_decision", default_value="false"),
+        DeclareLaunchArgument("enable_sentry_decision", default_value="false"),
+        DeclareLaunchArgument("enable_sentry_command_mux", default_value="false"),
+        DeclareLaunchArgument("enable_sentry_goal_executor", default_value="false"),
+        DeclareLaunchArgument("sentry_intent_topic", default_value="/sentry/intent"),
+        DeclareLaunchArgument("autoaim_raw_cmd_topic", default_value="/autoaim/gimbal_cmd_raw"),
+        DeclareLaunchArgument("final_gimbal_cmd_topic", default_value="/gimbal_cmd"),
+        DeclareLaunchArgument("sentry_goals_file", default_value=sentry_goals_default),
         DeclareLaunchArgument("color_ignore", default_value="1"),
         DeclareLaunchArgument("target_color", default_value="red"),
         DeclareLaunchArgument("publish_debug_image", default_value="false"),
@@ -187,6 +205,18 @@ def generate_launch_description():
                     name="rm_autoaim",
                     output="screen",
                     parameters=[autoaim_params],
+                    condition=IfCondition(command_mux_disabled),
+                ),
+                Node(
+                    package="rm_autoaim",
+                    executable="autoaim_node",
+                    name="rm_autoaim",
+                    output="screen",
+                    parameters=[autoaim_params],
+                    remappings=[
+                        ("/gimbal_cmd", LaunchConfiguration("autoaim_raw_cmd_topic")),
+                    ],
+                    condition=IfCondition(_truthy("enable_sentry_command_mux")),
                 ),
             ],
         ),
@@ -215,6 +245,18 @@ def generate_launch_description():
                     name="rm_autoaim",
                     output="screen",
                     parameters=[autoaim_params],
+                    condition=IfCondition(command_mux_disabled),
+                ),
+                Node(
+                    package="rm_autoaim",
+                    executable="autoaim_node",
+                    name="rm_autoaim",
+                    output="screen",
+                    parameters=[autoaim_params],
+                    remappings=[
+                        ("/gimbal_cmd", LaunchConfiguration("autoaim_raw_cmd_topic")),
+                    ],
+                    condition=IfCondition(_truthy("enable_sentry_command_mux")),
                 ),
             ],
         ),
@@ -227,6 +269,42 @@ def generate_launch_description():
                     executable="sentry_bt",
                     name="sentry_bt",
                     output="screen",
+                    parameters=[{
+                        "intent_topic": LaunchConfiguration("sentry_intent_topic"),
+                    }],
+                )
+            ],
+        ),
+        TimerAction(
+            period=5.0,
+            condition=IfCondition(command_mux_enabled),
+            actions=[
+                Node(
+                    package="rm_sentry_decision",
+                    executable="sentry_command_mux_node",
+                    name="sentry_command_mux",
+                    output="screen",
+                    parameters=[{
+                        "intent_topic": LaunchConfiguration("sentry_intent_topic"),
+                        "autoaim_raw_cmd_topic": LaunchConfiguration("autoaim_raw_cmd_topic"),
+                        "final_gimbal_cmd_topic": LaunchConfiguration("final_gimbal_cmd_topic"),
+                    }],
+                )
+            ],
+        ),
+        TimerAction(
+            period=5.0,
+            condition=IfCondition(goal_executor_enabled),
+            actions=[
+                Node(
+                    package="rm_sentry_decision",
+                    executable="sentry_goal_executor_node",
+                    name="sentry_goal_executor",
+                    output="screen",
+                    parameters=[{
+                        "intent_topic": LaunchConfiguration("sentry_intent_topic"),
+                        "goals_file": LaunchConfiguration("sentry_goals_file"),
+                    }],
                 )
             ],
         ),

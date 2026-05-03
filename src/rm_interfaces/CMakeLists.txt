@@ -13,6 +13,9 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/ArmorDetection.msg"
   "msg/ArmorDetections.msg"
   "msg/LocalizationStatus.msg"
+  "msg/SentryIntent.msg"
+  "msg/SentryDecisionDebug.msg"
+  "msg/SentrySimInput.msg"
   DEPENDENCIES std_msgs geometry_msgs
 )
 

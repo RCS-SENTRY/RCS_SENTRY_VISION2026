@@ -5,6 +5,9 @@
       <UpdateBlackboard/>
       <SubTree ID="HardConstraintGuard"/>
       <EvaluateTacticalState tactical_state="{tactical_state}"/>
+      <ForceSuccess>
+        <SubTree ID="RuleActionSubtree"/>
+      </ForceSuccess>
 
       <ReactiveFallback name="main_dispatch">
         <Sequence name="emergency_branch">
@@ -26,8 +29,6 @@
             <WaitRevive/>
           </Fallback>
         </Sequence>
-
-        <SubTree ID="RuleActionSubtree"/>
 
         <Switch6 variable="{tactical_state}"
                  case_1="RETREAT"
@@ -107,7 +108,7 @@
       <ChooseBestGoal/>
       <SetPreferredPosture posture="MOVE"/>
       <SetPreferredFirePolicy fire_policy="HOLD_FIRE"/>
-      <SetPreferredSpinMode spin_mode="OFF"/>
+      <SetSituationalSpinPreference/>
       <SetPreferredSupercapMode supercap_mode="BURST"/>
     </Sequence>
   </BehaviorTree>
@@ -119,7 +120,7 @@
       <ChooseBestGoal/>
       <SetPreferredPosture posture="MOVE"/>
       <SetPreferredFirePolicy fire_policy="HOLD_FIRE"/>
-      <SetPreferredSpinMode spin_mode="OFF"/>
+      <SetSituationalSpinPreference/>
       <SetPreferredSupercapMode supercap_mode="KEEP"/>
     </Sequence>
   </BehaviorTree>
@@ -131,7 +132,7 @@
       <ChooseBestGoal/>
       <SetPreferredPosture posture="DEFENSE"/>
       <SetPreferredFirePolicy fire_policy="NORMAL"/>
-      <SetPreferredSpinMode spin_mode="OFF"/>
+      <SetSituationalSpinPreference/>
       <SetPreferredSupercapMode supercap_mode="OFF"/>
     </Sequence>
   </BehaviorTree>
@@ -141,7 +142,7 @@
       <ResetGoalCandidates/>
       <SetCombatPosturePreference/>
       <UpdateCombatFirePolicy/>
-      <SetCombatSpinPreference/>
+      <SetSituationalSpinPreference/>
       <SetCombatSupercapPreference/>
       <EvaluateEngageGoals/>
       <ChooseBestGoal/>
@@ -155,7 +156,7 @@
       <ChooseBestGoal/>
       <SetPreferredPosture posture="MOVE"/>
       <SetPreferredFirePolicy fire_policy="CONSERVATIVE"/>
-      <SetPreferredSpinMode spin_mode="ON"/>
+      <SetSituationalSpinPreference/>
       <SetPreferredSupercapMode supercap_mode="OFF"/>
     </Sequence>
   </BehaviorTree>
@@ -167,7 +168,7 @@
       <ChooseBestGoal/>
       <SetPreferredPosture posture="MOVE"/>
       <SetPreferredFirePolicy fire_policy="CONSERVATIVE"/>
-      <SetPreferredSpinMode spin_mode="OFF"/>
+      <SetSituationalSpinPreference/>
       <SetPreferredSupercapMode supercap_mode="BURST"/>
     </Sequence>
   </BehaviorTree>

@@ -25,6 +25,103 @@ float AdviceBonus(const RobotContext& ctx, const std::string& goal_id)
     return 0.10f * ctx.llm_advice.confidence;
 }
 
+SpinMode DecideSituationalSpinPreference(const RobotContext& ctx, std::string& reason)
+{
+    const float hp_ratio = SafeRatio(ctx.hp, ctx.hp_max);
+    const bool enemy_pressure = ctx.enemy_in_view && ctx.enemy_confidence >= 0.45f;
+    const bool strong_enemy_pressure = ctx.enemy_in_view && ctx.enemy_confidence >= 0.70f;
+
+    if (!ctx.match_started)
+    {
+        reason = "比赛未开始，不启用小陀螺。";
+        return SpinMode::OFF;
+    }
+    if (!ctx.referee_link_fresh)
+    {
+        reason = "输入链路超时，小陀螺偏好保持关闭，等待 executor 进入安全输出。";
+        return SpinMode::OFF;
+    }
+    if (ctx.is_dead)
+    {
+        reason = "机器人已死亡，不启用小陀螺。";
+        return SpinMode::OFF;
+    }
+    if (ctx.power_guard_active)
+    {
+        reason = "底盘功率已进入守卫区，小陀螺先关闭避免继续冲功率。";
+        return SpinMode::OFF;
+    }
+    if (ctx.supercap_guard_active || ctx.supercap_soc < 0.14f)
+    {
+        reason = "超级电容余量过低，小陀螺先关闭。";
+        return SpinMode::OFF;
+    }
+
+    if (ctx.llm_advice.valid && ctx.llm_advice.spin_preference == SpinMode::ON &&
+        ctx.llm_advice.confidence >= 0.75f)
+    {
+        reason = "外部建议明确启用小陀螺，且资源守卫未触发，采纳该偏好。";
+        return SpinMode::ON;
+    }
+
+    switch (ctx.tactical_state)
+    {
+        case TacticalState::RETREAT:
+            if (enemy_pressure || hp_ratio < 0.35f)
+            {
+                reason = "撤退或低血受压时优先开小陀螺，提升脱离过程的抗命中能力。";
+                return SpinMode::ON;
+            }
+            reason = "撤退态但当前没有明显敌情压力，暂不开小陀螺以保留机动余量。";
+            return SpinMode::OFF;
+        case TacticalState::RESUPPLY:
+            if (enemy_pressure || !ctx.is_disengaged)
+            {
+                reason = "补给路上仍有敌情或尚未脱战，开小陀螺保护转移。";
+                return SpinMode::ON;
+            }
+            reason = "已脱战补给且敌情不明显，关闭小陀螺节省底盘功率。";
+            return SpinMode::OFF;
+        case TacticalState::HOLD:
+            reason = "固守高价值区域时默认开小陀螺，降低静态防守被集火命中的概率。";
+            return SpinMode::ON;
+        case TacticalState::ENGAGE:
+            if (enemy_pressure)
+            {
+                reason = strong_enemy_pressure
+                             ? "交战目标置信度高，开小陀螺进行对抗。"
+                             : "已有可疑敌情，开小陀螺提高遭遇战容错。";
+                return SpinMode::ON;
+            }
+            reason = "交战态未形成可靠敌情，暂不开小陀螺。";
+            return SpinMode::OFF;
+        case TacticalState::SEARCH:
+            if (ctx.supercap_soc >= 0.18f)
+            {
+                reason = "搜索巡逻默认开小陀螺，兼顾扫视和防偷袭。";
+                return SpinMode::ON;
+            }
+            reason = "搜索态电容余量偏低，暂不开小陀螺。";
+            return SpinMode::OFF;
+        case TacticalState::REPOSITION:
+            if (enemy_pressure || ctx.supercap_soc >= 0.22f)
+            {
+                reason = "转位过程中开小陀螺，减少跨区移动时的暴露风险。";
+                return SpinMode::ON;
+            }
+            reason = "转位态但电容余量偏低且无敌情，暂不开小陀螺。";
+            return SpinMode::OFF;
+    }
+
+    reason = "未匹配到战术态，默认不开小陀螺。";
+    return SpinMode::OFF;
+}
+
+void ApplySituationalSpinPreference(RobotContext& ctx)
+{
+    ctx.preferred_spin_mode = DecideSituationalSpinPreference(ctx, ctx.spin_reason);
+}
+
 // 战术态评估节点。
 // 它是整套 tactical 层里最关键的分发入口：
 // 先决定当前属于哪种 tactical_state，
@@ -54,7 +151,17 @@ public:
         // 3. 稳定据点防守；
         // 4. 明确的交战机会；
         // 5. 外部建议带来的软引导。
-        if (ctx_->is_dead)
+        if (!ctx_->match_started)
+        {
+            ctx_->tactical_state = TacticalState::SEARCH;
+            ctx_->tactical_reason = "比赛尚未进入七分钟对抗阶段，仅保持安全待机。";
+        }
+        else if (!ctx_->referee_link_fresh)
+        {
+            ctx_->tactical_state = TacticalState::RETREAT;
+            ctx_->tactical_reason = ctx_->input_health_reason;
+        }
+        else if (ctx_->is_dead)
         {
             ctx_->tactical_state = TacticalState::RETREAT;
             ctx_->tactical_reason = "当前已判定为死亡状态，应立即让复活分支接管。";
@@ -64,12 +171,18 @@ public:
             ctx_->tactical_state = TacticalState::RETREAT;
             ctx_->tactical_reason = "血量、热量或紧急守卫触发，需立即撤退。";
         }
+        else if (hp_ratio < 0.33f && ctx_->enemy_in_view)
+        {
+            ctx_->tactical_state = TacticalState::RETREAT;
+            ctx_->tactical_reason = "低血且仍有敌情压力，优先撤出战线而不是冒险走补给路线。";
+        }
         else if (ctx_->need_supply)
         {
             ctx_->tactical_state = TacticalState::RESUPPLY;
             ctx_->tactical_reason = "弹药或血量已低于补给阈值，转入补给态。";
         }
-        else if ((ctx_->on_fortress || ctx_->on_outpost) && !ctx_->enemy_in_view)
+        else if ((ctx_->on_base || ctx_->on_fortress || ctx_->on_outpost) &&
+                 !ctx_->enemy_in_view)
         {
             ctx_->tactical_state = TacticalState::HOLD;
             ctx_->tactical_reason = "当前已占据高价值据点，且没有必须切换目标的压力。";
@@ -239,6 +352,8 @@ public:
 
         std::lock_guard<std::mutex> lock(ctx_->mtx);
         ctx_->preferred_spin_mode = mode;
+        ctx_->spin_reason = std::string("战术子树显式设置小陀螺为 ") +
+                            SpinModeToString(mode) + "。";
         return BT::NodeStatus::SUCCESS;
     }
 };
@@ -331,8 +446,22 @@ public:
     }
 };
 
-// 交战时的旋转策略更新。
-// 当前逻辑偏简单：近距离更倾向开小陀螺，或直接采用外部建议。
+// 统一的小陀螺偏好更新。
+// 小陀螺不再只依赖“近距离交战”一个条件，而是综合战术态、敌情和底盘资源。
+class SetSituationalSpinPreferenceNode : public ContextSyncActionNode
+{
+public:
+    using ContextSyncActionNode::ContextSyncActionNode;
+
+    BT::NodeStatus tick() override
+    {
+        std::lock_guard<std::mutex> lock(ctx_->mtx);
+        ApplySituationalSpinPreference(*ctx_);
+        return BT::NodeStatus::SUCCESS;
+    }
+};
+
+// 兼容旧 XML 名称：交战子树如果还使用这个节点，也走同一套统一策略。
 class SetCombatSpinPreferenceNode : public ContextSyncActionNode
 {
 public:
@@ -341,10 +470,7 @@ public:
     BT::NodeStatus tick() override
     {
         std::lock_guard<std::mutex> lock(ctx_->mtx);
-        ctx_->preferred_spin_mode = ctx_->llm_advice.valid ? ctx_->llm_advice.spin_preference
-                                                           : ((ctx_->enemy_distance_m < 3.5f)
-                                                                  ? SpinMode::ON
-                                                                  : SpinMode::OFF);
+        ApplySituationalSpinPreference(*ctx_);
         return BT::NodeStatus::SUCCESS;
     }
 };
@@ -403,6 +529,11 @@ public:
     BT::NodeStatus tick() override
     {
         std::lock_guard<std::mutex> lock(ctx_->mtx);
+        if (ctx_->on_base)
+        {
+            AddGoalCandidate(*ctx_, "BASE_HOLD", 1.05f + AdviceBonus(*ctx_, "BASE_HOLD"),
+                             "当前只确认到基地增益点，低资源时优先留在基地侧完成保守补给。");
+        }
         AddGoalCandidate(*ctx_, "SUPPLY_LEFT", 0.95f + AdviceBonus(*ctx_, "SUPPLY_LEFT"),
                          "资源偏低时，优先考虑左侧补给路线。");
         AddGoalCandidate(*ctx_, "SUPPLY_RIGHT", 0.82f + AdviceBonus(*ctx_, "SUPPLY_RIGHT"),
@@ -419,6 +550,9 @@ public:
     BT::NodeStatus tick() override
     {
         std::lock_guard<std::mutex> lock(ctx_->mtx);
+        AddGoalCandidate(*ctx_, "BASE_HOLD",
+                         (ctx_->on_base ? 1.08f : 0.55f) + AdviceBonus(*ctx_, "BASE_HOLD"),
+                         "小场地或基地 RFID 可用时，基地增益点可作为保守固守点。");
         AddGoalCandidate(*ctx_, "FORTRESS_HOLD",
                          (ctx_->on_fortress ? 1.10f : 0.95f) +
                              AdviceBonus(*ctx_, "FORTRESS_HOLD"),
@@ -522,6 +656,7 @@ void RegisterTacticalNodes(BT::BehaviorTreeFactory& factory, std::shared_ptr<Rob
     RegisterContextNode<SetPreferredSupercapModeNode>(factory, "SetPreferredSupercapMode", ctx);
     RegisterContextNode<SetCombatPosturePreferenceNode>(factory, "SetCombatPosturePreference", ctx);
     RegisterContextNode<UpdateCombatFirePolicyNode>(factory, "UpdateCombatFirePolicy", ctx);
+    RegisterContextNode<SetSituationalSpinPreferenceNode>(factory, "SetSituationalSpinPreference", ctx);
     RegisterContextNode<SetCombatSpinPreferenceNode>(factory, "SetCombatSpinPreference", ctx);
     RegisterContextNode<SetCombatSupercapPreferenceNode>(factory, "SetCombatSupercapPreference", ctx);
     RegisterContextNode<EvaluateRetreatGoalsNode>(factory, "EvaluateRetreatGoals", ctx);

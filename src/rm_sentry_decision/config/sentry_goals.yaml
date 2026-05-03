@@ -1,0 +1,46 @@
+goals:
+  SAFE_HOLD:
+    id: 1
+    x: 0.0
+    y: 0.0
+    yaw: 0.0
+  WAIT_REVIVE:
+    id: 2
+    x: 0.0
+    y: 0.0
+    yaw: 0.0
+  SAFE_RETREAT_A:
+    id: 3
+    x: 0.5
+    y: 0.5
+    yaw: 0.0
+  SAFE_RETREAT_B:
+    id: 4
+    x: 0.5
+    y: -0.5
+    yaw: 0.0
+  SUPPLY_LEFT:
+    id: 5
+    x: 1.0
+    y: 1.0
+    yaw: 0.0
+  SUPPLY_RIGHT:
+    id: 6
+    x: 1.0
+    y: -1.0
+    yaw: 0.0
+  FORTRESS_HOLD:
+    id: 7
+    x: 2.0
+    y: 1.0
+    yaw: 0.0
+  OUTPOST_HOLD:
+    id: 8
+    x: 2.0
+    y: 0.0
+    yaw: 0.0
+  MID_PRESSURE:
+    id: 11
+    x: 3.0
+    y: 0.0
+    yaw: 0.0

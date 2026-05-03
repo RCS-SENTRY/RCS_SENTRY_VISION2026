@@ -1,0 +1,508 @@
+defaults:
+  match_started: true
+  referee_link_fresh: true
+  sim_input_fresh: true
+  hp: 400
+  hp_max: 400
+  heat: 0
+  heat_limit: 260
+  ammo_17: 300
+  gold: 400
+  team_17mm_exchange_remain: 1000
+  stage_remain_time: 420
+  is_disengaged: true
+  chassis_power_now: 20.0
+  chassis_power_limit: 100.0
+  supercap_soc: 0.50
+  current_posture: MOVE
+  reported_posture: MOVE
+  now_ms: 10000
+
+cases:
+  - name: full_resource_repositions_to_highground
+    context:
+      on_highground: false
+    expected:
+      tactical_state: REPOSITION
+      rule_action_type: NONE
+      desired_goal: HIGHGROUND_CENTER
+      desired_posture: MOVE
+      fire_policy: CONSERVATIVE
+      spin_mode: ON
+      supercap_mode: BURST
+
+  - name: highground_search_prefers_scan
+    context:
+      on_highground: true
+    expected:
+      tactical_state: SEARCH
+      desired_goal: HIGHGROUND_SCAN
+      fire_policy: CONSERVATIVE
+      spin_mode: ON
+      supercap_mode: OFF
+
+  - name: fortress_hold_switches_defense
+    context:
+      on_fortress: true
+    expected:
+      tactical_state: HOLD
+      desired_goal: FORTRESS_HOLD
+      desired_posture: DEFENSE
+      posture_cmd_referee: 2
+      fire_policy: NORMAL
+      spin_mode: ON
+
+  - name: close_confident_enemy_engages_aggressively
+    context:
+      enemy_in_view: true
+      enemy_confidence: 0.95
+      enemy_distance_m: 2.5
+      is_disengaged: false
+    expected:
+      tactical_state: ENGAGE
+      desired_goal: COMBAT_KITE_A
+      desired_posture: ATTACK
+      posture_cmd_referee: 1
+      fire_policy: AGGRESSIVE
+      spin_mode: ON
+      supercap_mode: KEEP
+
+  - name: heat_guard_forces_safe_retreat
+    context:
+      heat: 245
+    expected:
+      tactical_state: RETREAT
+      desired_goal: SAFE_RETREAT_A
+      fire_policy: HOLD_FIRE
+      spin_mode: OFF
+      supercap_mode: OFF
+      heat_guard_active: true
+      need_emergency_safety: true
+
+  - name: power_guard_forces_safe_retreat
+    context:
+      chassis_power_now: 99.0
+      enemy_in_view: true
+      enemy_confidence: 0.80
+      enemy_distance_m: 5.0
+    expected:
+      tactical_state: RETREAT
+      desired_goal: SAFE_RETREAT_A
+      fire_policy: HOLD_FIRE
+      spin_mode: OFF
+      power_guard_active: true
+      need_emergency_safety: true
+
+  - name: supercap_guard_forces_safe_retreat
+    context:
+      supercap_soc: 0.05
+    expected:
+      tactical_state: RETREAT
+      desired_goal: SAFE_RETREAT_A
+      fire_policy: HOLD_FIRE
+      spin_mode: OFF
+      supercap_guard_active: true
+      need_emergency_safety: true
+
+  - name: referee_loss_freezes_safe_hold
+    context:
+      referee_link_fresh: false
+      referee_status_age_ms: 600
+      enemy_in_view: true
+      enemy_confidence: 0.90
+    expected:
+      tactical_state: RETREAT
+      rule_action_type: NONE
+      desired_goal: SAFE_HOLD
+      desired_posture: MOVE
+      fire_policy: HOLD_FIRE
+      spin_mode: OFF
+      supercap_mode: OFF
+      need_emergency_safety: true
+
+  - name: low_ammo_under_fire_runs_to_supply_without_illegal_exchange
+    context:
+      ammo_17: 35
+      is_disengaged: false
+      enemy_in_view: true
+      enemy_confidence: 0.85
+      enemy_distance_m: 6.0
+    expected:
+      tactical_state: RESUPPLY
+      rule_action_type: NONE
+      desired_goal: SUPPLY_LEFT
+      fire_policy: HOLD_FIRE
+      spin_mode: ON
+      remote_ammo_req_inc: 0
+      ammo_guard_active: true
+
+  - name: low_ammo_disengaged_uses_remote_100_round_unit
+    context:
+      ammo_17: 35
+      is_disengaged: true
+      gold: 500
+    expected:
+      tactical_state: RESUPPLY
+      rule_action_type: REMOTE_AMMO
+      remote_ammo_req_inc: 1
+      fire_policy: HOLD_FIRE
+
+  - name: low_ammo_on_supply_uses_point_exchange_and_gold_cap
+    context:
+      ammo_17: 35
+      on_supply: true
+      gold: 80
+    expected:
+      tactical_state: RESUPPLY
+      rule_action_type: EXCHANGE_AMMO_AT_POINT
+      ammo_exchange_target_total: 80
+      fire_policy: HOLD_FIRE
+
+  - name: low_ammo_on_supply_without_gold_waits
+    context:
+      ammo_17: 35
+      on_supply: true
+      gold: 0
+    expected:
+      tactical_state: RESUPPLY
+      rule_action_type: NONE
+      ammo_exchange_target_total: 0
+      remote_ammo_req_inc: 0
+      fire_policy: HOLD_FIRE
+
+  - name: remote_ammo_respects_team_exchange_cap
+    context:
+      ammo_17: 35
+      is_disengaged: true
+      gold: 500
+      team_17mm_exchange_remain: 90
+    expected:
+      tactical_state: RESUPPLY
+      rule_action_type: NONE
+      remote_ammo_req_inc: 0
+      fire_policy: HOLD_FIRE
+
+  - name: low_hp_disengaged_buys_remote_hp
+    context:
+      hp: 95
+      stage_remain_time: 240
+      gold: 260
+      is_disengaged: true
+    expected:
+      tactical_state: RESUPPLY
+      rule_action_type: REMOTE_HP
+      remote_hp_req_inc: 1
+      fire_policy: HOLD_FIRE
+
+  - name: low_hp_with_enemy_prioritizes_retreat
+    context:
+      hp: 110
+      is_disengaged: false
+      enemy_in_view: true
+      enemy_confidence: 0.85
+      enemy_distance_m: 5.0
+    expected:
+      tactical_state: RETREAT
+      rule_action_type: NONE
+      desired_goal: SAFE_RETREAT_A
+      fire_policy: HOLD_FIRE
+      spin_mode: ON
+      supercap_mode: BURST
+
+  - name: critical_hp_with_enemy_enters_emergency
+    context:
+      hp: 70
+      is_disengaged: false
+      enemy_in_view: true
+      enemy_confidence: 0.85
+      enemy_distance_m: 5.0
+    expected:
+      tactical_state: RETREAT
+      desired_goal: SAFE_RETREAT_A
+      fire_policy: HOLD_FIRE
+      spin_mode: ON
+      supercap_mode: OFF
+      need_emergency_safety: true
+
+  - name: energy_activation_pulses_once
+    context:
+      can_activate_energy_mechanism: true
+      on_highground: true
+    expected:
+      rule_action_type: ACTIVATE_ENERGY
+      activate_energy_confirm: 1
+      desired_goal: HIGHGROUND_SCAN
+
+  - name: periodic_supply_ammo_claim_holds_fire
+    context:
+      can_claim_periodic_ammo: true
+      on_supply: true
+      ammo_17: 95
+    expected:
+      rule_action_type: CLAIM_PERIODIC_AMMO
+      claim_periodic_ammo: 1
+      fire_policy: HOLD_FIRE
+
+  - name: explicit_posture_switch_survives_tactical_overwrite
+    context:
+      posture_switch_requested: true
+      current_posture: DEFENSE
+      reported_posture: DEFENSE
+      desired_posture: DEFENSE
+    expected:
+      rule_action_type: SWITCH_POSTURE
+      desired_posture: ATTACK
+      posture_cmd_referee: 1
+
+  - name: posture_cooldown_blocks_explicit_switch
+    context:
+      posture_switch_requested: true
+      current_posture: DEFENSE
+      reported_posture: DEFENSE
+      desired_posture: DEFENSE
+      posture_cooldown_ok: false
+      posture_cooldown_remaining_ms: 3000
+    expected:
+      rule_action_type: SWITCH_POSTURE
+      desired_posture: DEFENSE
+      posture_cmd_referee: 0
+
+  - name: attack_debuff_rotates_engage_posture
+    context:
+      enemy_in_view: true
+      enemy_confidence: 0.92
+      enemy_distance_m: 6.0
+      is_disengaged: false
+      current_posture: ATTACK
+      reported_posture: ATTACK
+      desired_posture: ATTACK
+      posture_accumulated_ms:
+        attack: 181000
+    expected:
+      tactical_state: ENGAGE
+      desired_goal: COMBAT_HOLD_A
+      desired_posture: MOVE
+      posture_cmd_referee: 3
+      fire_policy: AGGRESSIVE
+
+  - name: warm_barrel_engage_conserves_heat
+    context:
+      enemy_in_view: true
+      enemy_confidence: 0.92
+      enemy_distance_m: 5.0
+      is_disengaged: false
+      heat: 205
+    expected:
+      tactical_state: ENGAGE
+      desired_goal: COMBAT_HOLD_A
+      fire_policy: CONSERVATIVE
+      heat_guard_active: false
+
+  - name: immediate_revive_when_free_confirm_unavailable
+    context:
+      hp: 0
+      can_confirm_revive: false
+      can_buy_immediate_revive: true
+      gold: 200
+      immediate_revive_cost: 80
+    expected:
+      tactical_state: RETREAT
+      desired_goal: WAIT_REVIVE
+      revive_cmd: 2
+      fire_policy: HOLD_FIRE
+
+  - name: free_revive_preferred_once_available
+    context:
+      hp: 0
+      can_confirm_revive: true
+      can_buy_immediate_revive: true
+      gold: 200
+      immediate_revive_cost: 80
+    expected:
+      tactical_state: RETREAT
+      desired_goal: WAIT_REVIVE
+      revive_cmd: 1
+      fire_policy: HOLD_FIRE
+
+  - name: pre_match_freezes_all_active_outputs
+    context:
+      match_started: false
+      game_progress: 3
+      enemy_in_view: true
+      enemy_confidence: 0.95
+      can_activate_energy_mechanism: true
+      can_claim_periodic_ammo: true
+      posture_switch_requested: true
+    expected:
+      tactical_state: SEARCH
+      rule_action_type: NONE
+      desired_goal: SAFE_HOLD
+      desired_posture: MOVE
+      fire_policy: HOLD_FIRE
+      spin_mode: OFF
+      supercap_mode: OFF
+      activate_energy_confirm: 0
+      claim_periodic_ammo: 0
+      posture_cmd_referee: 0
+
+  - name: remote_hp_waits_when_gold_is_short_late_game
+    context:
+      hp: 95
+      stage_remain_time: 0
+      gold: 100
+      is_disengaged: true
+    expected:
+      tactical_state: RESUPPLY
+      rule_action_type: NONE
+      remote_hp_req_inc: 0
+      fire_policy: HOLD_FIRE
+
+  - name: death_suppresses_energy_activation
+    context:
+      hp: 0
+      can_activate_energy_mechanism: true
+      can_buy_immediate_revive: false
+      can_confirm_revive: false
+    expected:
+      tactical_state: RETREAT
+      rule_action_type: NONE
+      desired_goal: WAIT_REVIVE
+      activate_energy_confirm: 0
+      revive_cmd: 3
+      fire_policy: HOLD_FIRE
+
+  - name: weak_enemy_signal_does_not_open_fire
+    context:
+      enemy_in_view: true
+      enemy_confidence: 0.55
+      enemy_distance_m: 5.0
+      is_disengaged: false
+      on_highground: true
+    expected:
+      tactical_state: SEARCH
+      desired_goal: HIGHGROUND_SCAN
+      fire_policy: CONSERVATIVE
+      spin_mode: ON
+
+  - name: zero_ammo_on_point_requests_affordable_minimum_unit
+    context:
+      ammo_17: 0
+      on_outpost: true
+      gold: 15
+    expected:
+      tactical_state: RESUPPLY
+      rule_action_type: EXCHANGE_AMMO_AT_POINT
+      ammo_exchange_target_total: 10
+      fire_policy: HOLD_FIRE
+
+  - name: remote_ammo_cooldown_suppresses_second_request
+    context:
+      ammo_17: 35
+      is_disengaged: true
+      gold: 500
+      last_remote_ammo_request_ms: 8000
+      now_ms: 10000
+    expected:
+      tactical_state: RESUPPLY
+      rule_action_type: NONE
+      remote_ammo_req_inc: 0
+      fire_policy: HOLD_FIRE
+
+  - name: remote_hp_cooldown_suppresses_second_request
+    context:
+      hp: 95
+      is_disengaged: true
+      gold: 500
+      last_remote_hp_request_ms: 8000
+      now_ms: 10000
+    expected:
+      tactical_state: RESUPPLY
+      rule_action_type: NONE
+      remote_hp_req_inc: 0
+      fire_policy: HOLD_FIRE
+
+  - name: energy_activation_pulse_cooldown_is_quiet
+    context:
+      can_activate_energy_mechanism: true
+      last_energy_activate_ms: 9500
+      now_ms: 10000
+    expected:
+      rule_action_type: NONE
+      activate_energy_confirm: 0
+
+  - name: periodic_ammo_claim_pulse_cooldown_is_quiet
+    context:
+      can_claim_periodic_ammo: true
+      on_supply: true
+      last_periodic_ammo_claim_ms: 9500
+      now_ms: 10000
+    expected:
+      rule_action_type: NONE
+      claim_periodic_ammo: 0
+
+  - name: base_rfid_holds_in_limited_field
+    status:
+      rfid_status: 1
+    expected:
+      tactical_state: HOLD
+      desired_goal: BASE_HOLD
+      desired_posture: DEFENSE
+      on_base: true
+      is_dead: false
+
+  - name: base_rfid_allows_point_exchange
+    status:
+      rfid_status: 1
+      projectile_allowance_17mm: 35
+      remaining_gold_coin: 80
+      team_17mm_exchange_remain: 1000
+    expected:
+      tactical_state: RESUPPLY
+      rule_action_type: EXCHANGE_AMMO_AT_POINT
+      desired_goal: BASE_HOLD
+      ammo_exchange_target_total: 80
+      fire_policy: HOLD_FIRE
+      on_base: true
+
+  - name: missing_current_hp_uses_ally_sentry_hp
+    status:
+      current_hp: 0
+      maximum_hp: 400
+      ally_7_robot_hp: 350
+      rfid_status: 1
+    expected:
+      hp: 350
+      hp_max: 400
+      health_data_degraded: true
+      is_dead: false
+      tactical_state: HOLD
+      desired_goal: BASE_HOLD
+
+  - name: all_hp_fields_missing_defaults_alive_for_limited_test
+    status:
+      current_hp: 0
+      maximum_hp: 0
+      ally_7_robot_hp: 0
+      rfid_status: 1
+    expected:
+      hp: 400
+      hp_max: 400
+      health_data_degraded: true
+      is_dead: false
+      tactical_state: HOLD
+      desired_goal: BASE_HOLD
+
+  - name: explicit_revive_signal_still_marks_dead
+    status:
+      current_hp: 0
+      maximum_hp: 400
+      ally_7_robot_hp: 0
+      can_buy_instant_revival: 1
+      instant_revival_cost: 80
+      remaining_gold_coin: 200
+    expected:
+      hp: 0
+      is_dead: true
+      tactical_state: RETREAT
+      desired_goal: WAIT_REVIVE
+      revive_cmd: 2

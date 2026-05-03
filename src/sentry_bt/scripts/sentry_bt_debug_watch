@@ -1,0 +1,717 @@
+#!/usr/bin/env python3
+
+import argparse
+import math
+import os
+import shutil
+import sys
+import time
+from collections import defaultdict, deque
+from typing import Any, Callable, Dict, List
+
+import rclpy
+from rclpy.node import Node
+from rclpy.qos import HistoryPolicy, QoSProfile, ReliabilityPolicy
+
+from rm_interfaces.msg import (
+    GimbalCmd,
+    GimbalStatus,
+    NavCmd,
+    SentryDecisionDebug,
+    SentryIntent,
+    SentrySimInput,
+)
+
+
+POSTURE_NAMES = {
+    0: "NONE",
+    1: "ATTACK",
+    2: "DEFENSE",
+    3: "MOVE",
+}
+
+TACTICAL_STATE_NAMES = {
+    0: "IDLE",
+    1: "HOLD",
+    2: "ENGAGE",
+    3: "RETREAT",
+    4: "RESUPPLY",
+    5: "SEARCH",
+    6: "REPOSITION",
+    7: "RUNE_SUPPORT",
+}
+
+RULE_ACTION_NAMES = {
+    0: "NONE",
+    1: "EXCHANGE_AMMO_AT_POINT",
+    2: "REMOTE_AMMO",
+    3: "REMOTE_HP",
+    4: "CONFIRM_REVIVE",
+    5: "INSTANT_REVIVE",
+    6: "CHANGE_POSTURE",
+    7: "ACTIVATE_ENERGY",
+}
+
+FIRE_POLICY_NAMES = {
+    0: "HOLD_FIRE",
+    1: "CONSERVATIVE",
+    2: "NORMAL",
+    3: "AGGRESSIVE",
+}
+
+SPIN_MODE_NAMES = {
+    0: "OFF",
+    1: "ON",
+}
+
+SUPERCAP_MODE_NAMES = {
+    0: "OFF",
+    1: "KEEP",
+    2: "BURST",
+}
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description="Watch selected fields from /sentry_bt/debug in a stable terminal table."
+    )
+    parser.add_argument(
+        "--topic",
+        default="/sentry_bt/debug",
+        help="Topic name of rm_interfaces/msg/SentryDecisionDebug",
+    )
+    parser.add_argument(
+        "--fields",
+        default=(
+            "frame_index,tactical_state,rule_action_type,"
+            "reported_posture,current_posture,desired_posture,pending_posture_target,"
+            "posture_switch_pending,posture_cooldown_remaining_ms,"
+            "current_posture_remaining_before_debuff_ms,current_posture_debuffed,"
+            "hp,ammo_17,heat,enemy_in_view,desired_goal,fire_policy,"
+            "posture_cmd_referee,remote_ammo_req_inc,remote_hp_req_inc"
+        ),
+        help="Comma-separated field names to show",
+    )
+    parser.add_argument(
+        "--refresh-hz",
+        type=float,
+        default=8.0,
+        help="UI refresh rate",
+    )
+    parser.add_argument(
+        "--only-changed",
+        default="false",
+        help="Whether to show only changed fields: true or false",
+    )
+    parser.add_argument(
+        "--history-size",
+        type=int,
+        default=80,
+        help="Number of recent samples kept for history rendering",
+    )
+    parser.add_argument(
+        "--sim-input-topic",
+        default="/sentry_bt/sim_input",
+        help="Topic name of rm_interfaces/msg/SentrySimInput",
+    )
+    parser.add_argument(
+        "--intent-topic",
+        default="/sentry/intent",
+        help="Topic name of rm_interfaces/msg/SentryIntent",
+    )
+    parser.add_argument(
+        "--status-topic",
+        default="/gimbal_status",
+        help="Topic name of rm_interfaces/msg/GimbalStatus",
+    )
+    parser.add_argument(
+        "--gimbal-cmd-topic",
+        default="/gimbal_cmd",
+        help="Topic name of rm_interfaces/msg/GimbalCmd",
+    )
+    parser.add_argument(
+        "--nav-cmd-topic",
+        default="/nav_cmd",
+        help="Topic name of rm_interfaces/msg/NavCmd",
+    )
+    parser.add_argument(
+        "--mode",
+        default="onboard",
+        choices=("debug", "onboard"),
+        help="Display mode. debug shows simulator input; onboard emphasizes real inputs.",
+    )
+    parser.add_argument(
+        "--view",
+        default="io",
+        choices=("table", "io", "full"),
+        help="table=field table only, io=inputs/outputs plus reasons, full=both",
+    )
+    return parser.parse_args()
+
+
+def format_protocol_name(mapping: Dict[int, str]) -> Callable[[Any], str]:
+    def formatter(value: Any) -> str:
+        if isinstance(value, bool):
+            return "true" if value else "false"
+        return mapping.get(int(value), str(value))
+
+    return formatter
+
+
+FORMATTERS: Dict[str, Callable[[Any], str]] = {
+    "reported_posture": format_protocol_name(POSTURE_NAMES),
+    "current_posture": format_protocol_name(POSTURE_NAMES),
+    "preferred_posture": format_protocol_name(POSTURE_NAMES),
+    "desired_posture": format_protocol_name(POSTURE_NAMES),
+    "pending_posture_target": format_protocol_name(POSTURE_NAMES),
+    "posture_cmd_referee": format_protocol_name(POSTURE_NAMES),
+    "tactical_state": format_protocol_name(TACTICAL_STATE_NAMES),
+    "rule_action_type": format_protocol_name(RULE_ACTION_NAMES),
+    "fire_policy": format_protocol_name(FIRE_POLICY_NAMES),
+    "spin_mode": format_protocol_name(SPIN_MODE_NAMES),
+    "supercap_mode": format_protocol_name(SUPERCAP_MODE_NAMES),
+}
+
+HISTORY_TOKEN_MAPPINGS: Dict[str, Dict[Any, str]] = {
+    "reported_posture": {0: ".", 1: "A", 2: "D", 3: "M"},
+    "current_posture": {0: ".", 1: "A", 2: "D", 3: "M"},
+    "preferred_posture": {0: ".", 1: "A", 2: "D", 3: "M"},
+    "desired_posture": {0: ".", 1: "A", 2: "D", 3: "M"},
+    "pending_posture_target": {0: ".", 1: "A", 2: "D", 3: "M"},
+    "posture_cmd_referee": {0: ".", 1: "A", 2: "D", 3: "M"},
+    "tactical_state": {0: ".", 1: "H", 2: "E", 3: "R", 4: "U", 5: "S", 6: "P", 7: "N"},
+    "rule_action_type": {0: ".", 1: "X", 2: "A", 3: "H", 4: "F", 5: "I", 6: "P", 7: "E"},
+    "fire_policy": {0: "H", 1: "C", 2: "N", 3: "A"},
+    "spin_mode": {0: ".", 1: "S"},
+    "supercap_mode": {0: ".", 1: "K", 2: "B"},
+    "enemy_in_view": {False: ".", True: "E"},
+    "posture_switch_pending": {False: ".", True: "P"},
+    "current_posture_debuffed": {False: ".", True: "D"},
+    "preferred_posture_debuffed": {False: ".", True: "D"},
+    "attack_posture_debuffed": {False: ".", True: "D"},
+    "defense_posture_debuffed": {False: ".", True: "D"},
+    "move_posture_debuffed": {False: ".", True: "D"},
+}
+
+
+class DebugWatchNode(Node):
+    def __init__(
+        self,
+        topic: str,
+        sim_input_topic: str,
+        intent_topic: str,
+        status_topic: str,
+        gimbal_cmd_topic: str,
+        nav_cmd_topic: str,
+        mode: str,
+        view: str,
+        fields: List[str],
+        only_changed: bool,
+        refresh_hz: float,
+        history_size: int,
+    ):
+        super().__init__("sentry_bt_debug_watch")
+        self.topic = topic
+        self.sim_input_topic = sim_input_topic
+        self.intent_topic = intent_topic
+        self.status_topic = status_topic
+        self.gimbal_cmd_topic = gimbal_cmd_topic
+        self.nav_cmd_topic = nav_cmd_topic
+        self.mode = mode
+        self.view = view
+        self.fields = fields
+        self.only_changed = only_changed
+        self.history_size = max(history_size, 2)
+        self.latest_msg = None
+        self.latest_sim_input = None
+        self.latest_intent = None
+        self.latest_status = None
+        self.latest_gimbal_cmd = None
+        self.latest_nav_cmd = None
+        self.current_values: Dict[str, Any] = {}
+        self.previous_values: Dict[str, Any] = {}
+        self.changed_fields: Dict[str, bool] = {}
+        self.history: Dict[str, deque] = defaultdict(lambda: deque(maxlen=self.history_size))
+        self.last_receive_monotonic = 0.0
+        self.last_sim_input_receive_monotonic = 0.0
+        self.last_intent_receive_monotonic = 0.0
+        self.last_status_receive_monotonic = 0.0
+        self.last_gimbal_cmd_receive_monotonic = 0.0
+        self.last_nav_cmd_receive_monotonic = 0.0
+        qos = QoSProfile(
+            history=HistoryPolicy.KEEP_LAST,
+            depth=10,
+            reliability=ReliabilityPolicy.BEST_EFFORT,
+        )
+        self.subscription = self.create_subscription(
+            SentryDecisionDebug, topic, self.on_debug_message, qos
+        )
+        self.sim_input_subscription = self.create_subscription(
+            SentrySimInput, sim_input_topic, self.on_sim_input_message, qos
+        )
+        self.intent_subscription = self.create_subscription(
+            SentryIntent, intent_topic, self.on_intent_message, qos
+        )
+        self.status_subscription = self.create_subscription(
+            GimbalStatus, status_topic, self.on_status_message, qos
+        )
+        self.gimbal_cmd_subscription = self.create_subscription(
+            GimbalCmd, gimbal_cmd_topic, self.on_gimbal_cmd_message, qos
+        )
+        self.nav_cmd_subscription = self.create_subscription(
+            NavCmd, nav_cmd_topic, self.on_nav_cmd_message, qos
+        )
+        period = 1.0 / max(refresh_hz, 1.0)
+        self.timer = self.create_timer(period, self.render)
+
+    def on_debug_message(self, msg: SentryDecisionDebug) -> None:
+        self.latest_msg = msg
+        self.last_receive_monotonic = time.monotonic()
+
+        current_values = {}
+        for field in self.fields:
+            if not hasattr(msg, field):
+                continue
+            current_values[field] = getattr(msg, field)
+
+        changed = {}
+        for field, value in current_values.items():
+            changed[field] = self.current_values.get(field) != value
+            self.history[field].append(value)
+
+        self.previous_values = self.current_values
+        self.current_values = current_values
+        self.changed_fields = changed
+
+    def on_sim_input_message(self, msg: SentrySimInput) -> None:
+        self.latest_sim_input = msg
+        self.last_sim_input_receive_monotonic = time.monotonic()
+
+    def on_intent_message(self, msg: SentryIntent) -> None:
+        self.latest_intent = msg
+        self.last_intent_receive_monotonic = time.monotonic()
+
+    def on_status_message(self, msg: GimbalStatus) -> None:
+        self.latest_status = msg
+        self.last_status_receive_monotonic = time.monotonic()
+
+    def on_gimbal_cmd_message(self, msg: GimbalCmd) -> None:
+        self.latest_gimbal_cmd = msg
+        self.last_gimbal_cmd_receive_monotonic = time.monotonic()
+
+    def on_nav_cmd_message(self, msg: NavCmd) -> None:
+        self.latest_nav_cmd = msg
+        self.last_nav_cmd_receive_monotonic = time.monotonic()
+
+    def format_value(self, field: str, value: Any) -> str:
+        formatter = FORMATTERS.get(field)
+        if formatter is not None:
+            return formatter(value)
+        if isinstance(value, bool):
+            return "true" if value else "false"
+        return str(value)
+
+    def format_delta(self, current: Any, previous: Any) -> str:
+        if previous is None:
+            return "init"
+        if isinstance(current, bool):
+            return "changed" if current != previous else ""
+        if isinstance(current, (int, float)) and isinstance(previous, (int, float)):
+            delta = current - previous
+            if delta == 0:
+                return ""
+            if isinstance(current, int) and isinstance(previous, int):
+                return f"{delta:+d}"
+            return f"{delta:+.3f}"
+        return "changed" if current != previous else ""
+
+    def is_numeric_like(self, value: Any) -> bool:
+        return isinstance(value, (bool, int, float)) and not isinstance(value, str)
+
+    def numeric_value(self, value: Any) -> float:
+        if isinstance(value, bool):
+            return 1.0 if value else 0.0
+        return float(value)
+
+    def render_history(self, field: str, width: int) -> str:
+        values = list(self.history.get(field, []))
+        if len(values) < 2:
+            return ""
+
+        token_mapping = HISTORY_TOKEN_MAPPINGS.get(field)
+        if token_mapping is not None:
+            discrete_values = list(values)
+            if len(discrete_values) > width:
+                step = len(discrete_values) / float(width)
+                reduced = []
+                for index in range(width):
+                    position = min(int(math.floor(index * step)), len(discrete_values) - 1)
+                    reduced.append(discrete_values[position])
+                discrete_values = reduced
+            return "".join(token_mapping.get(value, "?") for value in discrete_values)
+
+        numeric_values = [self.numeric_value(item) for item in values if self.is_numeric_like(item)]
+        if len(numeric_values) < 2:
+            return ""
+
+        if width <= 0:
+            return ""
+
+        blocks = " .:-=+*#%@"
+        minimum = min(numeric_values)
+        maximum = max(numeric_values)
+        span = maximum - minimum
+
+        if len(numeric_values) > width:
+            step = len(numeric_values) / float(width)
+            reduced = []
+            for index in range(width):
+                position = min(int(math.floor(index * step)), len(numeric_values) - 1)
+                reduced.append(numeric_values[position])
+            numeric_values = reduced
+
+        if span == 0.0:
+            fill_char = blocks[-1] if numeric_values[-1] != 0.0 else blocks[1]
+            return fill_char * len(numeric_values)
+
+        rendered = []
+        for value in numeric_values:
+            normalized = (value - minimum) / span
+            block_index = min(int(round(normalized * (len(blocks) - 1))), len(blocks) - 1)
+            rendered.append(blocks[block_index])
+        return "".join(rendered)
+
+    def print_focus_view(self, field: str, width: int) -> None:
+        value = getattr(self.latest_msg, field)
+        previous = self.previous_values.get(field)
+        value_text = self.format_value(field, value)
+        delta_text = self.format_delta(value, previous)
+
+        print("-" * width)
+        print(f"field: {field}")
+        print(f"value: {value_text}")
+        print(f"delta: {delta_text}")
+
+        history_values = list(self.history.get(field, []))
+        if history_values and self.is_numeric_like(history_values[-1]):
+            numeric_values = [self.numeric_value(item) for item in history_values]
+            print(
+                f"window: samples={len(numeric_values)}  min={min(numeric_values):.3f}  "
+                f"max={max(numeric_values):.3f}"
+            )
+            history_width = max(min(width - 12, self.history_size), 20)
+            print("history:")
+            print(self.render_history(field, history_width))
+
+        print("-" * width)
+        print("reasons:")
+        print(f"  tactical: {self.latest_msg.tactical_reason}")
+        print(f"  rule:     {self.latest_msg.rule_reason}")
+        print(f"  goal:     {self.latest_msg.goal_reason}")
+        print(f"  posture:  {self.latest_msg.posture_reason}")
+        if hasattr(self.latest_msg, "spin_reason"):
+            print(f"  spin:     {self.latest_msg.spin_reason}")
+        print(f"  executor: {self.latest_msg.executor_summary}")
+        if hasattr(self.latest_msg, "last_nav_command"):
+            print(f"  nav:      {self.latest_msg.last_nav_command}")
+        if hasattr(self.latest_msg, "last_shooter_command"):
+            print(f"  shooter:  {self.latest_msg.last_shooter_command}")
+
+    def format_bool(self, value: bool) -> str:
+        return "true" if value else "false"
+
+    def age_ms(self, timestamp: float) -> str:
+        if timestamp <= 0.0:
+            return "n/a"
+        return str(int((time.monotonic() - timestamp) * 1000.0))
+
+    def print_status_summary(self, width: int) -> None:
+        title = "actual_input" if self.mode == "onboard" else "status_input"
+        print(f"{title}:")
+        if self.latest_status is None:
+            print(f"  waiting for first message on {self.status_topic}")
+            print("-" * width)
+            return
+
+        msg = self.latest_status
+        print(
+            f"  age_ms={self.age_ms(self.last_status_receive_monotonic)} "
+            f"progress={msg.game_progress} remain_s={msg.stage_remain_time} "
+            f"hp={msg.current_hp}/{msg.maximum_hp} ammo17={msg.projectile_allowance_17mm} "
+            f"heat={msg.shooter_17mm_1_barrel_heat}/{msg.shooter_barrel_heat_limit} "
+            f"cooling={msg.shooter_barrel_cooling_value}"
+        )
+        print(
+            f"  gold={msg.remaining_gold_coin} disengaged={self.format_bool(msg.is_disengaged != 0)} "
+            f"posture={FORMATTERS['reported_posture'](msg.sentry_posture)} "
+            f"power={msg.chassis_power:.1f}/{msg.chassis_power_limit} "
+            f"energy={msg.remain_energy:.1f} buffer={msg.buffer_energy}"
+        )
+        print(
+            f"  rule_sync(exchange={msg.exchanged_projectile_allowance}, "
+            f"remote_ammo={msg.remote_exchange_projectile_count}, "
+            f"remote_hp={msg.remote_exchange_hp_count}, "
+            f"team_ammo_remain={msg.team_17mm_exchange_remain}, "
+            f"revive_free={self.format_bool(msg.can_confirm_revival != 0)}, "
+            f"revive_buy={self.format_bool(msg.can_buy_instant_revival != 0)}, "
+            f"revive_cost={msg.instant_revival_cost}, "
+            f"energy_can={self.format_bool(msg.can_activate_energy_mechanism != 0)})"
+        )
+        print(
+            f"  field(event=0x{msg.event_data:08x}, rfid=0x{msg.rfid_status:08x}, "
+            f"rfid2=0x{msg.rfid_status_2:02x}, outpost_hp={msg.ally_outpost_hp}, "
+            f"base_hp={msg.ally_base_hp})"
+        )
+        print("-" * width)
+
+    def print_output_summary(self, width: int) -> None:
+        print("decision_output:")
+        if self.latest_msg is None:
+            print(f"  waiting for first message on {self.topic}")
+        else:
+            msg = self.latest_msg
+            print(
+                f"  bt(frame={msg.frame_index}, tick={msg.bt_tick_index}, "
+                f"tactical={FORMATTERS['tactical_state'](msg.tactical_state)}, "
+                f"rule={FORMATTERS['rule_action_type'](msg.rule_action_type)}, "
+                f"goal={msg.desired_goal}, fire={FORMATTERS['fire_policy'](msg.fire_policy)})"
+            )
+            print(
+                f"  posture(report={FORMATTERS['reported_posture'](msg.reported_posture)}, "
+                f"current={FORMATTERS['current_posture'](msg.current_posture)}, "
+                f"desired={FORMATTERS['desired_posture'](msg.desired_posture)}, "
+                f"pending={FORMATTERS['pending_posture_target'](msg.pending_posture_target)}, "
+                f"cooldown_ms={msg.posture_cooldown_remaining_ms})"
+            )
+            print(
+                f"  health(referee_fresh={self.format_bool(msg.referee_link_fresh)}, "
+                f"status_age_ms={msg.referee_status_age_ms}, "
+                f"sim_fresh={self.format_bool(msg.sim_input_fresh)}, "
+                f"sim_age_ms={msg.sim_input_age_ms})"
+            )
+
+        if self.latest_gimbal_cmd is None:
+            print(f"  gimbal_cmd: waiting on {self.gimbal_cmd_topic}")
+        else:
+            cmd = self.latest_gimbal_cmd
+            print(
+                f"  gimbal_cmd(age_ms={self.age_ms(self.last_gimbal_cmd_receive_monotonic)}, "
+                f"topic={self.gimbal_cmd_topic}, mode={cmd.mode}, fire={cmd.fire_control}, "
+                f"state_switch={FORMATTERS['posture_cmd_referee'](cmd.state_switch)}, "
+                f"goal_id={cmd.goal_id}, tactical={FORMATTERS['tactical_state'](cmd.tactical_state)}, "
+                f"posture={FORMATTERS['desired_posture'](cmd.posture)}, "
+                f"rule={FORMATTERS['rule_action_type'](cmd.rule_action_type)})"
+            )
+            print(
+                f"  referee_cmd(ammo_target={cmd.ammo_exchange_target_total}, "
+                f"revive={cmd.revive_cmd}, remote_ammo_inc={cmd.remote_ammo_req_inc}, "
+                f"remote_hp_inc={cmd.remote_hp_req_inc}, "
+                f"posture_cmd={FORMATTERS['posture_cmd_referee'](cmd.posture_cmd_referee)}, "
+                f"energy={cmd.activate_energy_confirm}, claim={cmd.claim_periodic_ammo})"
+            )
+
+        if self.latest_intent is None:
+            print(f"  sentry_intent: waiting on {self.intent_topic}")
+        else:
+            intent = self.latest_intent
+            print(
+                f"  sentry_intent(age_ms={self.age_ms(self.last_intent_receive_monotonic)}, "
+                f"topic={self.intent_topic}, goal_id={intent.goal_id}, "
+                f"tactical={FORMATTERS['tactical_state'](intent.tactical_state)}, "
+                f"posture_intent={intent.posture_intent}, "
+                f"fire={FORMATTERS['fire_policy'](intent.fire_policy)}, "
+                f"rule={FORMATTERS['rule_action_type'](intent.rule_action_type)})"
+            )
+            print(
+                f"  intent_rule(ammo_target={intent.ammo_exchange_target_total}, "
+                f"revive_confirm={intent.request_revive_confirm}, "
+                f"instant_revive={intent.request_instant_revive}, "
+                f"remote_ammo_once={intent.request_remote_ammo_once}, "
+                f"remote_hp_once={intent.request_remote_hp_once}, "
+                f"posture_referee={FORMATTERS['posture_cmd_referee'](intent.request_posture_referee)}, "
+                f"energy={intent.request_activate_energy})"
+            )
+
+        if self.latest_nav_cmd is None:
+            print(f"  nav_cmd: waiting on {self.nav_cmd_topic}")
+        else:
+            nav = self.latest_nav_cmd
+            print(
+                f"  nav_cmd(age_ms={self.age_ms(self.last_nav_cmd_receive_monotonic)}, "
+                f"topic={self.nav_cmd_topic}, vx={nav.linear_x:.2f}, "
+                f"vy={nav.linear_y:.2f}, wz={nav.angular_z:.2f}, reached={nav.is_reached})"
+            )
+        print("-" * width)
+
+    def format_optional_override(self, enabled: bool, value: Any, formatter=None) -> str:
+        if not enabled:
+            return "-"
+        if formatter is not None:
+            return formatter(value)
+        if isinstance(value, float):
+            return f"{value:.2f}"
+        if isinstance(value, bool):
+            return self.format_bool(value)
+        return str(value)
+
+    def print_sim_input_summary(self, width: int) -> None:
+        print("sim_input:")
+        if self.latest_sim_input is None:
+            print(f"  waiting for first message on {self.sim_input_topic}")
+            return
+
+        age_ms = int((time.monotonic() - self.last_sim_input_receive_monotonic) * 1000.0)
+        msg = self.latest_sim_input
+        posture_override = self.format_optional_override(
+            msg.has_sentry_posture_override,
+            msg.sentry_posture_override,
+            FORMATTERS["reported_posture"],
+        )
+        energy_override = self.format_optional_override(
+            msg.has_can_activate_energy_mechanism_override,
+            msg.can_activate_energy_mechanism_override,
+        )
+
+        print(
+            f"  age_ms={age_ms}  enemy(view={self.format_bool(msg.enemy_in_view)}"
+            f", conf={msg.enemy_confidence:.2f}, dist_m={msg.enemy_distance_m:.2f})"
+        )
+        print(
+            "  map("
+            f"supply={self.format_bool(msg.on_supply)}, "
+            f"fortress={self.format_bool(msg.on_fortress)}, "
+            f"outpost={self.format_bool(msg.on_outpost)}, "
+            f"highground={self.format_bool(msg.on_highground)}, "
+            f"claim={self.format_bool(msg.can_claim_periodic_ammo)}, "
+            f"switch_req={self.format_bool(msg.posture_switch_requested)})"
+        )
+        print(
+            "  overrides("
+            f"hp={self.format_optional_override(msg.has_hp_override, msg.hp_override)}, "
+            f"ammo_17={self.format_optional_override(msg.has_ammo_17_override, msg.ammo_17_override)}, "
+            f"heat={self.format_optional_override(msg.has_heat_override, msg.heat_override)}, "
+            f"gold={self.format_optional_override(msg.has_gold_override, msg.gold_override)}, "
+            "stage="
+            f"{self.format_optional_override(msg.has_stage_remain_time_override, msg.stage_remain_time_override)}, "
+            "disengaged="
+            f"{self.format_optional_override(msg.has_is_disengaged_override, msg.is_disengaged_override)}, "
+            f"posture={posture_override}, energy={energy_override})"
+        )
+        print("-" * width)
+
+    def render(self) -> None:
+        os.system("clear")
+        terminal_width = max(shutil.get_terminal_size((120, 40)).columns, 80)
+        print(
+            f"sentry_bt_debug_watch  mode={self.mode} view={self.view} "
+            f"debug={self.topic}"
+        )
+        print(
+            "fields="
+            + ", ".join(self.fields)
+            + ("  only_changed=true" if self.only_changed else "")
+        )
+
+        if self.latest_msg is None:
+            print("\nwaiting for first debug message...")
+            return
+
+        age_ms = int((time.monotonic() - self.last_receive_monotonic) * 1000.0)
+        print(
+            f"frame={self.latest_msg.frame_index}  bt={self.latest_msg.bt_tick_index}  "
+            f"age_ms={age_ms}  goal={self.latest_msg.desired_goal}"
+        )
+        if len(self.fields) == 1 and hasattr(self.latest_msg, self.fields[0]):
+            self.print_focus_view(self.fields[0], terminal_width)
+            if self.view in ("io", "full"):
+                self.print_status_summary(terminal_width)
+                if self.mode == "debug":
+                    self.print_sim_input_summary(terminal_width)
+                self.print_output_summary(terminal_width)
+            sys.stdout.flush()
+            return
+
+        separator = "-" * terminal_width
+        history_width = max(min(terminal_width - 84, self.history_size), 20)
+        if self.view in ("table", "full"):
+            print(separator)
+            print(f"{'field':<28} {'value':<20} {'delta':<10} {'changed':<8} {'history':<{history_width}}")
+            print(separator)
+
+            for field in self.fields:
+                if not hasattr(self.latest_msg, field):
+                    print(f"{field:<32} <missing field>")
+                    continue
+
+                value = getattr(self.latest_msg, field)
+                previous = self.previous_values.get(field)
+                changed = self.changed_fields.get(field, False)
+                if self.only_changed and not changed:
+                    continue
+
+                value_text = self.format_value(field, value)
+                prev_value = None if previous is None else previous
+                delta_text = self.format_delta(value, prev_value)
+                changed_text = "*" if changed else ""
+                history_text = ""
+                if self.is_numeric_like(value):
+                    history_text = self.render_history(field, history_width)
+                print(
+                    f"{field:<28} {value_text:<20} {delta_text:<10} {changed_text:<8} "
+                    f"{history_text:<{history_width}}"
+                )
+
+            print(separator)
+
+        if self.view in ("io", "full"):
+            self.print_status_summary(terminal_width)
+            if self.mode == "debug":
+                self.print_sim_input_summary(terminal_width)
+            self.print_output_summary(terminal_width)
+
+        print("reasons:")
+        print(f"  tactical: {self.latest_msg.tactical_reason}")
+        print(f"  rule:     {self.latest_msg.rule_reason}")
+        print(f"  goal:     {self.latest_msg.goal_reason}")
+        print(f"  posture:  {self.latest_msg.posture_reason}")
+        if hasattr(self.latest_msg, "spin_reason"):
+            print(f"  spin:     {self.latest_msg.spin_reason}")
+        print(f"  executor: {self.latest_msg.executor_summary}")
+        if hasattr(self.latest_msg, "last_nav_command"):
+            print(f"  nav:      {self.latest_msg.last_nav_command}")
+        if hasattr(self.latest_msg, "last_shooter_command"):
+            print(f"  shooter:  {self.latest_msg.last_shooter_command}")
+        sys.stdout.flush()
+
+
+def main() -> None:
+    args = parse_args()
+    fields = [item.strip() for item in args.fields.split(",") if item.strip()]
+    only_changed = str(args.only_changed).lower() in ("1", "true", "yes", "on")
+
+    rclpy.init()
+    node = DebugWatchNode(
+        args.topic,
+        args.sim_input_topic,
+        args.intent_topic,
+        args.status_topic,
+        args.gimbal_cmd_topic,
+        args.nav_cmd_topic,
+        args.mode,
+        args.view,
+        fields,
+        only_changed,
+        args.refresh_hz,
+        args.history_size,
+    )
+    try:
+        rclpy.spin(node)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        node.destroy_node()
+        rclpy.shutdown()
+
+
+if __name__ == "__main__":
+    main()

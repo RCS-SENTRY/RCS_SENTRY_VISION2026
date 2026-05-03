@@ -1,0 +1,45 @@
+initial_status:
+  game_progress: 4
+  stage_remain_time: 390
+  current_hp: 400
+  maximum_hp: 400
+  shooter_barrel_cooling_value: 30
+  shooter_barrel_heat_limit: 260
+  chassis_power_limit: 100
+  projectile_allowance_17mm: 90
+  remaining_gold_coin: 300
+  is_disengaged: 1
+  sentry_posture: 3
+  rfid_status: 0
+
+initial_sim_input:
+  enemy_in_view: false
+  enemy_confidence: 0.0
+  enemy_distance_m: 12.0
+  on_supply: false
+  on_fortress: false
+  on_outpost: false
+  on_highground: false
+  can_claim_periodic_ammo: false
+  posture_switch_requested: false
+
+phases:
+  - duration_ms: 2500
+    status:
+      rfid_status: 0
+  - duration_ms: 2500
+    status:
+      # bit 0: own base buff RFID
+      rfid_status: 1
+  - duration_ms: 2500
+    status:
+      # bit 19: own non-overlap supply RFID
+      rfid_status: 524288
+  - duration_ms: 2500
+    status:
+      # bit 17: own fortress RFID
+      rfid_status: 131072
+  - duration_ms: 2500
+    status:
+      # bit 1: own central highground RFID
+      rfid_status: 2

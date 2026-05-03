@@ -10,6 +10,12 @@ void LLMInterface::Update(RobotContext& ctx)
     ctx.llm_advice = {};
     ctx.llm_advice.expire_time_ms = (ctx.frame_index * 50U) + 500U;
 
+    if (!ctx.referee_link_fresh)
+    {
+        ctx.llm_advice.reason = "输入链路超时，暂停外部建议。";
+        return;
+    }
+
     if (ctx.is_dead)
     {
         ctx.llm_advice.reason = "处于等待复活阶段，暂不生成外部建议。";
@@ -31,7 +37,7 @@ void LLMInterface::Update(RobotContext& ctx)
         return;
     }
 
-    if (!ctx.enemy_in_view && !ctx.on_highground && !raw_need_supply)
+    if (!ctx.enemy_in_view && !ctx.on_base && !ctx.on_highground && !raw_need_supply)
     {
         ctx.llm_advice.valid = true;
         ctx.llm_advice.tactical_state = TacticalState::REPOSITION;
@@ -45,11 +51,12 @@ void LLMInterface::Update(RobotContext& ctx)
         return;
     }
 
-    if (ctx.on_fortress || ctx.on_outpost)
+    if (ctx.on_base || ctx.on_fortress || ctx.on_outpost)
     {
         ctx.llm_advice.valid = true;
         ctx.llm_advice.tactical_state = TacticalState::HOLD;
-        ctx.llm_advice.goal_id = ctx.on_fortress ? "FORTRESS_HOLD" : "OUTPOST_HOLD";
+        ctx.llm_advice.goal_id =
+            ctx.on_base ? "BASE_HOLD" : (ctx.on_fortress ? "FORTRESS_HOLD" : "OUTPOST_HOLD");
         ctx.llm_advice.posture_preference = Posture::DEFENSE;
         ctx.llm_advice.fire_policy = FirePolicy::NORMAL;
         ctx.llm_advice.spin_preference = SpinMode::OFF;

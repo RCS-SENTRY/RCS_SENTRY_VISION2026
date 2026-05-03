@@ -2,6 +2,10 @@
 
 #include <string>
 
+#include <rclcpp/rclcpp.hpp>
+
+#include "rm_interfaces/msg/nav_cmd.hpp"
+
 #include "robot_context.hpp"
 
 class NavInterface
@@ -17,15 +21,25 @@ public:
         SupercapMode supercap_mode{SupercapMode::OFF};
     };
 
-    NavInterface();
+    explicit NavInterface(rclcpp::Node& node);
 
-    // 行为树最终导航结果的发布占位接口。
-    // 当前实现只会缓存最近一次命令，并把摘要回写到 RobotContext，
-    // 方便日志与调试；后续可在这里接 ROS topic、action 或自定义导航模块。
+    // 将行为树的抽象 goal 收敛成底盘速度指令。
+    // 当前版本采用可配置的启发式速度表，保证没有完整定位/路径规划时也能形成闭环；
+    // 后续若接入正式导航模块，可保持 BT 输出不变，只替换这里的 goal 执行器。
     void PublishCommand(RobotContext& ctx);
 
     const GoalCommand& last_command() const;
+    const rm_interfaces::msg::NavCmd& last_nav_msg() const;
+    const std::string& output_topic() const;
 
 private:
+    rclcpp::Publisher<rm_interfaces::msg::NavCmd>::SharedPtr publisher_{};
     GoalCommand last_command_{};
+    rm_interfaces::msg::NavCmd last_nav_msg_{};
+    std::string output_topic_{};
+    double linear_speed_{0.75};
+    double strafe_speed_{0.55};
+    double retreat_speed_{0.70};
+    double slow_speed_{0.35};
+    double scan_wz_{0.45};
 };
