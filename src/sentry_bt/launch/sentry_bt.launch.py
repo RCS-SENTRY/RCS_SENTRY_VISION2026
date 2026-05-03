@@ -71,6 +71,8 @@ def generate_launch_description():
                 'frame_index,tactical_state,rule_action_type,desired_goal,'
                 'reported_posture,current_posture,desired_posture,fire_policy,spin_mode,'
                 'hp,ammo_17,heat,enemy_in_view,referee_link_fresh,sim_input_fresh,'
+                'nav_goal_active,nav_goal_reached,current_goal_id,'
+                'autoaim_has_target,autoaim_tracking,autoaim_fire_ready,'
                 'posture_cmd_referee,remote_ammo_req_inc,remote_hp_req_inc,'
                 'activate_energy_confirm,claim_periodic_ammo'
             )),

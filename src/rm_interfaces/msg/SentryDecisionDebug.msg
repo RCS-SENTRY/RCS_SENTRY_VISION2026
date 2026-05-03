@@ -37,6 +37,16 @@ bool   referee_link_fresh
 bool   sim_input_fresh
 uint32 referee_status_age_ms
 uint32 sim_input_age_ms
+bool   nav_goal_active
+bool   nav_goal_reached
+bool   nav_goal_failed
+uint8  current_goal_id
+uint32 nav_status_age_ms
+bool   autoaim_has_target
+bool   autoaim_tracking
+bool   autoaim_fire_ready
+float32 autoaim_target_distance
+uint32 autoaim_status_age_ms
 
 uint8  revive_cmd
 uint8  remote_ammo_req_inc

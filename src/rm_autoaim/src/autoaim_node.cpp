@@ -22,6 +22,7 @@
 
 using ArmorDetection = rm_interfaces::msg::ArmorDetection;
 using ArmorDetections = rm_interfaces::msg::ArmorDetections;
+using AutoaimTargetStatus = rm_interfaces::msg::AutoaimTargetStatus;
 using GimbalCmd = rm_interfaces::msg::GimbalCmd;
 using GimbalStatus = rm_interfaces::msg::GimbalStatus;
 
@@ -147,6 +148,8 @@ AutoaimNode::AutoaimNode(const rclcpp::NodeOptions & options)
   this->declare_parameter<bool>("hold_last_cmd_in_temp_lost", true);
   this->declare_parameter<bool>("allow_fire_on_prediction_fallback", true);
   this->declare_parameter<bool>("allow_fire_on_ray_fallback", false);
+  this->declare_parameter<bool>("enable_target_status", true);
+  this->declare_parameter<std::string>("target_status_topic", "/autoaim/target_status");
   this->declare_parameter<std::string>("imu_topic", "/imu/data");
   this->declare_parameter<std::string>("gimbal_status_topic", "/gimbal_status");
 
@@ -181,6 +184,10 @@ AutoaimNode::AutoaimNode(const rclcpp::NodeOptions & options)
     this->get_parameter("allow_fire_on_prediction_fallback").as_bool();
   allow_fire_on_ray_fallback_ =
     this->get_parameter("allow_fire_on_ray_fallback").as_bool();
+  enable_target_status_ =
+    this->get_parameter("enable_target_status").as_bool();
+  const std::string target_status_topic =
+    this->get_parameter("target_status_topic").as_string();
   const std::string imu_topic = this->get_parameter("imu_topic").as_string();
   const std::string gimbal_status_topic =
     this->get_parameter("gimbal_status_topic").as_string();
@@ -348,6 +355,11 @@ AutoaimNode::AutoaimNode(const rclcpp::NodeOptions & options)
   fire_debug_pub_ = this->create_publisher<std_msgs::msg::String>(
     "/autoaim/debug_fire_gate", rclcpp::SensorDataQoS());
 
+  if (enable_target_status_) {
+    target_status_pub_ = this->create_publisher<AutoaimTargetStatus>(
+      target_status_topic, rclcpp::SensorDataQoS());
+  }
+
   RCLCPP_INFO(get_logger(),
     "rm_autoaim initialized. tracking_frame=%s bullet=%.1fm/s delay=%.3fs "
     "K[fx=%.1f fy=%.1f cx=%.1f cy=%.1f]",
@@ -421,6 +433,34 @@ void AutoaimNode::publish_fire_debug(
   }
   debug_msg.data = ss.str();
   fire_debug_pub_->publish(debug_msg);
+}
+
+void AutoaimNode::publish_target_status(
+  bool has_target,
+  bool tracking,
+  bool temp_lost,
+  bool fire_ready,
+  double target_distance,
+  double yaw_error_deg,
+  double pitch_error_deg,
+  uint8_t aim_source,
+  const std::string & reason)
+{
+  if (!target_status_pub_) return;
+
+  AutoaimTargetStatus status;
+  status.header.stamp = this->now();
+  status.header.frame_id = world_frame_id_;
+  status.has_target = has_target;
+  status.tracking = tracking;
+  status.temp_lost = temp_lost;
+  status.fire_ready = fire_ready;
+  status.target_distance = static_cast<float>(std::max(0.0, target_distance));
+  status.yaw_error_deg = static_cast<float>(yaw_error_deg);
+  status.pitch_error_deg = static_cast<float>(pitch_error_deg);
+  status.aim_source = aim_source;
+  status.reason = reason;
+  target_status_pub_->publish(status);
 }
 
 // =============================================================================
@@ -522,6 +562,9 @@ void AutoaimNode::on_armors(const ArmorDetections::ConstSharedPtr msg)
         0.0,
         within_temp_hold ? "temp_lost" : (reason.empty() ? "lost_grace" : reason),
         age_sec);
+      publish_target_status(
+        false, false, true, false, 0.0, 0.0, 0.0, 0,
+        within_temp_hold ? "temp_lost" : (reason.empty() ? "lost_grace" : reason));
       return;
     }
 
@@ -556,6 +599,9 @@ void AutoaimNode::on_armors(const ArmorDetections::ConstSharedPtr msg)
       0.0,
       reason.empty() ? "no_detection" : reason,
       age_sec);
+    publish_target_status(
+      false, false, false, false, 0.0, 0.0, 0.0, 0,
+      reason.empty() ? "no_detection" : reason);
   };
 
   if (msg->detections.empty()) {
@@ -586,6 +632,7 @@ void AutoaimNode::on_armors(const ArmorDetections::ConstSharedPtr msg)
       0.0,
       "no_imu",
       has_last_detection_ ? (t_img - last_detection_time_).seconds() : -1.0);
+    publish_target_status(false, false, false, false, 0.0, 0.0, 0.0, 0, "no_imu");
     return;
   }
 
@@ -882,6 +929,18 @@ void AutoaimNode::on_armors(const ArmorDetections::ConstSharedPtr msg)
     aim.pitch_window,
     "",
     0.0);
+  const std::uint8_t aim_source_id =
+    use_ray_fallback ? 3 : (use_direct_fallback ? 2 : 1);
+  publish_target_status(
+    true,
+    true,
+    false,
+    cmd.fire_control == 1,
+    aim.target_distance,
+    cmd_yaw_err_deg,
+    cmd_pitch_err_deg,
+    aim_source_id,
+    source);
 
   RCLCPP_INFO_THROTTLE(get_logger(), *get_clock(), 2000,
     "Aim: src=%s cmd=(%.2f°, %.2f°) err=(%.2f°, %.2f°) fire=%d ready=[align:%s tracker:%s] "

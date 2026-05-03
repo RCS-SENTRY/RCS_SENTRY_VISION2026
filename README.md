@@ -31,7 +31,9 @@ PB2025:
 RM2026 sentry behavior tree 已按意图层接入：`sentry_bt` 只发布
 `/sentry/intent` 和 `/sentry_bt/debug`，不直接发布 `/gimbal_cmd` 或
 `/nav_cmd`。`rm_sentry_decision` 中的 command mux 合成最终
-`/gimbal_cmd`，goal executor 只向 Nav2 发送 `NavigateToPose` goal。
+`/gimbal_cmd`，goal executor 只向 Nav2 发送 `NavigateToPose` goal，并通过
+`/sentry/nav_status` 给决策层反馈战术到点状态。预设脚本模式由
+`sentry_mission_runner_node` 发布 `/sentry/intent`，与 `sentry_bt` 二选一。
 
 详细边界、姿态编码、规则字段限制和调试命令见
 [docs/sentry_decision_integration.md](docs/sentry_decision_integration.md)。

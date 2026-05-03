@@ -13,6 +13,7 @@
 #define RM_AUTOAIM__AUTOAIM_NODE_HPP_
 
 #include <deque>
+#include <cstdint>
 #include <mutex>
 #include <string>
 #include <unordered_set>
@@ -21,6 +22,7 @@
 #include <rclcpp/rclcpp.hpp>
 #include <sensor_msgs/msg/imu.hpp>
 #include <geometry_msgs/msg/point_stamped.hpp>
+#include <rm_interfaces/msg/autoaim_target_status.hpp>
 #include <rm_interfaces/msg/armor_detections.hpp>
 #include <rm_interfaces/msg/gimbal_cmd.hpp>
 #include <rm_interfaces/msg/gimbal_status.hpp>
@@ -109,6 +111,16 @@ private:
     double pitch_window,
     const std::string & reason,
     double age_sec);
+  void publish_target_status(
+    bool has_target,
+    bool tracking,
+    bool temp_lost,
+    bool fire_ready,
+    double target_distance,
+    double yaw_error_deg,
+    double pitch_error_deg,
+    uint8_t aim_source,
+    const std::string & reason);
 
   // ===========================================================================
   // 参数 — PnP / 坐标变换
@@ -137,6 +149,7 @@ private:
   double temp_lost_timeout_sec_ = 0.30;
   double lost_timeout_sec_ = 0.80;
   bool hold_last_cmd_in_temp_lost_ = true;
+  bool enable_target_status_ = true;
 
   // ===========================================================================
   // Tracker + Aimer
@@ -176,6 +189,7 @@ private:
   rclcpp::Publisher<geometry_msgs::msg::PointStamped>::SharedPtr world_points_pub_;
   rclcpp::Publisher<rm_interfaces::msg::GimbalCmd>::SharedPtr gimbal_cmd_pub_;
   rclcpp::Publisher<std_msgs::msg::String>::SharedPtr fire_debug_pub_;
+  rclcpp::Publisher<rm_interfaces::msg::AutoaimTargetStatus>::SharedPtr target_status_pub_;
 };
 
 }  // namespace rm_autoaim

@@ -9,8 +9,10 @@
 #include "bt_setup.hpp"
 #include "llm_interface.hpp"
 #include "referee_interface.hpp"
+#include "rm_interfaces/msg/autoaim_target_status.hpp"
 #include "rm_interfaces/msg/sentry_decision_debug.hpp"
 #include "rm_interfaces/msg/sentry_intent.hpp"
+#include "rm_interfaces/msg/sentry_nav_status.hpp"
 #include "rm_interfaces/msg/sentry_sim_input.hpp"
 #include "robot_context.hpp"
 #include "sentry_decision_protocol.h"
@@ -52,6 +54,8 @@ std::uint8_t GoalIdToProtocol(const std::string& goal)
     if (goal == "HIGHGROUND_SCAN") return 16;
     if (goal == "HIGHGROUND_CENTER") return 17;
     if (goal == "MID_CROSS") return 18;
+    if (goal == "BASE_HOME") return 19;
+    if (goal == "BASE_HOLD") return 20;
     return 0;
 }
 
@@ -157,10 +161,21 @@ public:
         enable_sim_input_ = this->declare_parameter<bool>("enable_sim_input", false);
         const auto sim_input_timeout_ms = static_cast<std::uint64_t>(
             std::max<int>(1, this->declare_parameter<int>("sim_input_timeout_ms", 500)));
+        const auto autoaim_status_timeout_ms = static_cast<std::uint64_t>(
+            std::max<int>(1, this->declare_parameter<int>("autoaim_status_timeout_ms", 300)));
+        const auto nav_status_timeout_ms = static_cast<std::uint64_t>(
+            std::max<int>(1, this->declare_parameter<int>("nav_status_timeout_ms", 500)));
         debug_topic_ =
             this->declare_parameter<std::string>("debug_topic", "/sentry_bt/debug");
         intent_topic_ =
             this->declare_parameter<std::string>("intent_topic", "/sentry/intent");
+        const std::string autoaim_target_status_topic =
+            this->declare_parameter<std::string>(
+                "autoaim_target_status_topic", "/autoaim/target_status");
+        const std::string nav_status_topic =
+            this->declare_parameter<std::string>("nav_status_topic", "/sentry/nav_status");
+        const std::string hold_reached_posture =
+            this->declare_parameter<std::string>("hold_reached_posture", "DEFENSE");
         const bool enable_bt_file_log =
             this->declare_parameter<bool>("enable_bt_file_log", true);
         const std::string btlog_path =
@@ -174,6 +189,19 @@ public:
             posture_debuff_threshold_ms, posture_debuff_rotate_margin_ms);
         referee_.ConfigureInputFreshness(status_timeout_ms, enemy_memory_ms);
         referee_.ConfigureSimInput(enable_sim_input_, sim_input_timeout_ms);
+        referee_.ConfigureDecisionStatusInputs(autoaim_status_timeout_ms, nav_status_timeout_ms);
+        Posture parsed_hold_reached_posture = Posture::DEFENSE;
+        if (ParsePosture(hold_reached_posture, parsed_hold_reached_posture))
+        {
+            ctx_->hold_reached_posture = parsed_hold_reached_posture;
+        }
+        else
+        {
+            RCLCPP_WARN(
+                get_logger(),
+                "Invalid hold_reached_posture=%s, using DEFENSE",
+                hold_reached_posture.c_str());
+        }
 
         RegisterAllNodes(factory_, ctx_);
 
@@ -194,6 +222,17 @@ public:
             "/gimbal_status", rclcpp::SensorDataQoS(),
             [this](const rm_interfaces::msg::GimbalStatus::SharedPtr msg) {
                 referee_.UpdateFromStatus(*msg);
+            });
+        autoaim_target_status_sub_ =
+            this->create_subscription<rm_interfaces::msg::AutoaimTargetStatus>(
+                autoaim_target_status_topic, rclcpp::SensorDataQoS(),
+                [this](const rm_interfaces::msg::AutoaimTargetStatus::SharedPtr msg) {
+                    referee_.UpdateFromAutoaimTargetStatus(*msg);
+                });
+        nav_status_sub_ = this->create_subscription<rm_interfaces::msg::SentryNavStatus>(
+            nav_status_topic, rclcpp::SensorDataQoS(),
+            [this](const rm_interfaces::msg::SentryNavStatus::SharedPtr msg) {
+                referee_.UpdateFromNavStatus(*msg);
             });
 
         if (enable_sim_input_)
@@ -217,9 +256,10 @@ public:
 
         RCLCPP_INFO(
             get_logger(),
-            "sentry_bt is INTENT-ONLY. subscribing /gimbal_status%s, publishing %s and %s. "
+            "sentry_bt is INTENT-ONLY. subscribing /gimbal_status, %s, %s%s, publishing %s and %s. "
             "It does NOT publish /gimbal_cmd or /nav_cmd.",
-            enable_sim_input_ ? " + /sentry_bt/sim_input" : "",
+            autoaim_target_status_topic.c_str(), nav_status_topic.c_str(),
+            enable_sim_input_ ? ", /sentry_bt/sim_input" : "",
             intent_topic_.c_str(), debug_topic_.c_str());
     }
 
@@ -313,6 +353,20 @@ private:
         message.sim_input_age_ms =
             static_cast<std::uint32_t>(std::min<std::uint64_t>(
                 ctx_->sim_input_age_ms, 0xFFFFFFFFULL));
+        message.nav_goal_active = ctx_->nav_goal_active;
+        message.nav_goal_reached = ctx_->nav_goal_reached;
+        message.nav_goal_failed = ctx_->nav_goal_failed;
+        message.current_goal_id = ctx_->current_goal_id;
+        message.nav_status_age_ms =
+            static_cast<std::uint32_t>(std::min<std::uint64_t>(
+                ctx_->nav_status_age_ms, 0xFFFFFFFFULL));
+        message.autoaim_has_target = ctx_->autoaim_has_target;
+        message.autoaim_tracking = ctx_->autoaim_tracking;
+        message.autoaim_fire_ready = ctx_->autoaim_fire_ready;
+        message.autoaim_target_distance = ctx_->autoaim_target_distance;
+        message.autoaim_status_age_ms =
+            static_cast<std::uint32_t>(std::min<std::uint64_t>(
+                ctx_->autoaim_status_age_ms, 0xFFFFFFFFULL));
         message.revive_cmd = ctx_->revive_cmd;
         message.remote_ammo_req_inc = ctx_->remote_ammo_req_inc;
         message.remote_hp_req_inc = ctx_->remote_hp_req_inc;
@@ -483,6 +537,9 @@ private:
     std::unique_ptr<BT::Tree> tree_{};
     rclcpp::Subscription<rm_interfaces::msg::GimbalStatus>::SharedPtr gimbal_status_sub_{};
     rclcpp::Subscription<rm_interfaces::msg::SentrySimInput>::SharedPtr sim_input_sub_{};
+    rclcpp::Subscription<rm_interfaces::msg::AutoaimTargetStatus>::SharedPtr
+        autoaim_target_status_sub_{};
+    rclcpp::Subscription<rm_interfaces::msg::SentryNavStatus>::SharedPtr nav_status_sub_{};
     rclcpp::Publisher<rm_interfaces::msg::SentryDecisionDebug>::SharedPtr debug_pub_{};
     rclcpp::Publisher<rm_interfaces::msg::SentryIntent>::SharedPtr intent_pub_{};
     rclcpp::TimerBase::SharedPtr tick_timer_{};

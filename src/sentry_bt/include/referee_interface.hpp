@@ -4,7 +4,9 @@
 #include <cstdint>
 #include <mutex>
 
+#include "rm_interfaces/msg/autoaim_target_status.hpp"
 #include "rm_interfaces/msg/gimbal_status.hpp"
+#include "rm_interfaces/msg/sentry_nav_status.hpp"
 #include "rm_interfaces/msg/sentry_sim_input.hpp"
 
 #include "robot_context.hpp"
@@ -21,9 +23,14 @@ public:
     void ConfigureInputFreshness(std::uint64_t status_timeout_ms,
                                  std::uint64_t enemy_memory_ms);
     void ConfigureSimInput(bool enable_sim_input, std::uint64_t sim_input_timeout_ms);
+    void ConfigureDecisionStatusInputs(std::uint64_t autoaim_status_timeout_ms,
+                                       std::uint64_t nav_status_timeout_ms);
 
     void UpdateFromStatus(const rm_interfaces::msg::GimbalStatus& status);
     void UpdateFromSimInput(const rm_interfaces::msg::SentrySimInput& sim_input);
+    void UpdateFromAutoaimTargetStatus(
+        const rm_interfaces::msg::AutoaimTargetStatus& target_status);
+    void UpdateFromNavStatus(const rm_interfaces::msg::SentryNavStatus& nav_status);
     void ObserveDecisionOutput(RobotContext& ctx);
 
     // 将最新输入与本地时序状态机合并后写入 RobotContext。
@@ -35,8 +42,12 @@ private:
     mutable std::mutex mutex_{};
     rm_interfaces::msg::GimbalStatus latest_status_{};
     rm_interfaces::msg::SentrySimInput latest_sim_input_{};
+    rm_interfaces::msg::AutoaimTargetStatus latest_autoaim_target_status_{};
+    rm_interfaces::msg::SentryNavStatus latest_nav_status_{};
     bool has_status_{false};
     bool has_sim_input_{false};
+    bool has_autoaim_target_status_{false};
+    bool has_nav_status_{false};
     bool enable_sim_input_{false};
     std::uint64_t frame_index_{0};
     std::uint64_t status_timeout_ms_{300};
@@ -46,8 +57,12 @@ private:
     std::uint64_t posture_debuff_rotate_margin_ms_{15000};
     std::uint64_t sim_input_timeout_ms_{500};
     std::uint64_t enemy_memory_ms_{800};
+    std::uint64_t autoaim_status_timeout_ms_{300};
+    std::uint64_t nav_status_timeout_ms_{500};
     std::uint64_t last_status_ms_{0};
     std::uint64_t last_sim_input_ms_{0};
+    std::uint64_t last_autoaim_target_status_ms_{0};
+    std::uint64_t last_nav_status_ms_{0};
     bool enemy_seen_latched_{false};
     float enemy_confidence_filtered_{0.0f};
     float enemy_distance_filtered_m_{12.0f};

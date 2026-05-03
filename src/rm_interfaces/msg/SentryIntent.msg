@@ -33,6 +33,8 @@ uint8 tactical_state
 # 16=HIGHGROUND_SCAN
 # 17=HIGHGROUND_CENTER
 # 18=MID_CROSS
+# 19=BASE_HOME
+# 20=BASE_HOLD
 uint8 goal_id
 
 # posture_intent:

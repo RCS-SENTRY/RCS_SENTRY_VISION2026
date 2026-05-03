@@ -1,0 +1,19 @@
+mission:
+  - name: go_mid_pressure
+    goal_id: 11
+    tactical_state: 6
+    posture_intent: 1
+    fire_policy: 0
+    spin_mode: 0
+    supercap_mode: 0
+    wait_reached: true
+    timeout_sec: 20.0
+
+  - name: hold_mid_attack
+    goal_id: 11
+    tactical_state: 1
+    posture_intent: 2
+    fire_policy: 2
+    spin_mode: 1
+    supercap_mode: 0
+    duration_sec: 999.0

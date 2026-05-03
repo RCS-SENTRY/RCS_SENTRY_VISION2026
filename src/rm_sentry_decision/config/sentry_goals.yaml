@@ -1,3 +1,6 @@
+# Placeholder map goals for RM2026 sentry intent execution.
+# IMPORTANT: measure and replace every x/y/yaw in the actual competition map
+# before field use. These values are only safe for bench/bringup wiring tests.
 goals:
   SAFE_HOLD:
     id: 1
@@ -39,8 +42,63 @@ goals:
     x: 2.0
     y: 0.0
     yaw: 0.0
+  COMBAT_KITE_A:
+    id: 9
+    x: 2.4
+    y: -0.7
+    yaw: 0.0
+  COMBAT_HOLD_A:
+    id: 10
+    x: 2.4
+    y: 0.0
+    yaw: 0.0
   MID_PRESSURE:
     id: 11
     x: 3.0
+    y: 0.0
+    yaw: 0.0
+  HIGHGROUND_PEEK:
+    id: 12
+    x: 2.8
+    y: 1.2
+    yaw: 0.0
+  COMBAT_PUSH_A:
+    id: 13
+    x: 3.4
+    y: 0.0
+    yaw: 0.0
+  SEARCH_AREA_A:
+    id: 14
+    x: 2.0
+    y: 1.5
+    yaw: 0.0
+  SEARCH_AREA_B:
+    id: 15
+    x: 2.0
+    y: -1.5
+    yaw: 0.0
+  HIGHGROUND_SCAN:
+    id: 16
+    x: 2.5
+    y: 1.6
+    yaw: 0.0
+  HIGHGROUND_CENTER:
+    id: 17
+    x: 2.8
+    y: 1.4
+    yaw: 0.0
+  MID_CROSS:
+    id: 18
+    x: 3.2
+    y: 0.4
+    yaw: 0.0
+  BASE_HOME:
+    id: 19
+    x: 0.0
+    y: 0.0
+    yaw: 0.0
+  BASE_HOLD:
+    id: 20
+    x: 0.3
     y: 0.0
     yaw: 0.0

@@ -1,5 +1,6 @@
 #include "bt_nodes_executor.hpp"
 
+#include <algorithm>
 #include <cstdint>
 #include <sstream>
 
@@ -110,6 +111,12 @@ float PostureDebuffPenalty(const RobotContext& ctx, Posture posture)
 bool HasExplicitPostureOverride(const RobotContext& ctx)
 {
     return ctx.rule_action_type == RuleActionType::SWITCH_POSTURE || ctx.posture_switch_requested;
+}
+
+bool IsMotionTacticalState(TacticalState state)
+{
+    return state == TacticalState::REPOSITION || state == TacticalState::SEARCH ||
+           state == TacticalState::RESUPPLY || state == TacticalState::RETREAT;
 }
 
 Posture ExplicitPostureTarget(const RobotContext& ctx)
@@ -225,6 +232,23 @@ public:
             ctx_->posture_reason = std::string("当前存在显式姿态切换请求，直接请求切换到 ") +
                                    PostureToString(selected_posture) + "。";
         }
+        else if (ctx_->nav_goal_reached && ctx_->tactical_state == TacticalState::HOLD)
+        {
+            selected_posture = ctx_->hold_reached_posture;
+            ctx_->posture_reason = std::string("导航目标已到达，HOLD 态按参数切到 ") +
+                                   PostureToString(selected_posture) + "。";
+        }
+        else if (ctx_->nav_goal_reached && ctx_->tactical_state == TacticalState::ENGAGE)
+        {
+            selected_posture = Posture::ATTACK;
+            ctx_->posture_reason = "导航目标已到达且处于 ENGAGE 态，切到 ATTACK 姿态。";
+        }
+        else if (!ctx_->nav_goal_reached && IsMotionTacticalState(ctx_->tactical_state))
+        {
+            selected_posture = Posture::MOVE;
+            ctx_->posture_reason =
+                "导航目标尚未到达且当前为机动类战术态，保持 MOVE 姿态。";
+        }
         else
         {
             selected_posture = SelectPostureWithDebuffAwareness(*ctx_, ctx_->posture_reason);
@@ -266,6 +290,23 @@ public:
         }
 
         FirePolicy policy = ctx_->preferred_fire_policy;
+        if (ctx_->nav_goal_reached && ctx_->tactical_state == TacticalState::HOLD)
+        {
+            policy = FirePolicy::NORMAL;
+        }
+        else if (ctx_->nav_goal_reached && ctx_->tactical_state == TacticalState::ENGAGE)
+        {
+            policy = ClampFirePolicy(
+                std::max(policy, FirePolicy::NORMAL,
+                         [](FirePolicy lhs, FirePolicy rhs) {
+                             return static_cast<int>(lhs) < static_cast<int>(rhs);
+                         }),
+                FirePolicy::AGGRESSIVE);
+        }
+        else if (!ctx_->nav_goal_reached && IsMotionTacticalState(ctx_->tactical_state))
+        {
+            policy = ctx_->enemy_in_view ? FirePolicy::CONSERVATIVE : FirePolicy::HOLD_FIRE;
+        }
         if (ctx_->heat_guard_active || ctx_->ammo_17 <= 0 ||
             ctx_->rule_action_type == RuleActionType::EXCHANGE_AMMO_AT_POINT ||
             ctx_->rule_action_type == RuleActionType::CLAIM_PERIODIC_AMMO)

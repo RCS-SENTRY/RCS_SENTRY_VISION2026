@@ -129,6 +129,17 @@ struct RobotContext
     bool health_data_degraded{false};
     std::uint64_t referee_status_age_ms{0};
     std::uint64_t sim_input_age_ms{0};
+    bool nav_goal_active{false};
+    bool nav_goal_reached{false};
+    bool nav_goal_failed{false};
+    std::uint8_t current_goal_id{0};
+    std::uint64_t nav_status_age_ms{0};
+    bool autoaim_has_target{false};
+    bool autoaim_tracking{false};
+    bool autoaim_fire_ready{false};
+    float autoaim_target_distance{0.0f};
+    std::uint64_t autoaim_status_age_ms{0};
+    Posture hold_reached_posture{Posture::DEFENSE};
 
     // 由原始输入推导出的便捷状态。
     // UpdateBlackboard 和各类 Guard 节点都可以在每个 tick 内重算这些值。

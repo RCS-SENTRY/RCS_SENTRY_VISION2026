@@ -88,6 +88,8 @@ def parse_args() -> argparse.Namespace:
             "posture_switch_pending,posture_cooldown_remaining_ms,"
             "current_posture_remaining_before_debuff_ms,current_posture_debuffed,"
             "hp,ammo_17,heat,enemy_in_view,desired_goal,fire_policy,"
+            "nav_goal_active,nav_goal_reached,current_goal_id,"
+            "autoaim_has_target,autoaim_tracking,autoaim_fire_ready,"
             "posture_cmd_referee,remote_ammo_req_inc,remote_hp_req_inc"
         ),
         help="Comma-separated field names to show",

@@ -72,6 +72,16 @@ struct MergedSnapshot
     bool health_data_degraded{false};
     std::uint64_t referee_status_age_ms{0};
     std::uint64_t sim_input_age_ms{0};
+    bool nav_goal_active{false};
+    bool nav_goal_reached{false};
+    bool nav_goal_failed{false};
+    std::uint8_t current_goal_id{0};
+    std::uint64_t nav_status_age_ms{0};
+    bool autoaim_has_target{false};
+    bool autoaim_tracking{false};
+    bool autoaim_fire_ready{false};
+    float autoaim_target_distance{0.0f};
+    std::uint64_t autoaim_status_age_ms{0};
     std::array<std::uint64_t, 3> posture_accumulated_ms{{0, 0, 0}};
     std::array<bool, 3> posture_debuffed{{false, false, false}};
     std::uint64_t posture_debuff_threshold_ms{180000};
@@ -119,6 +129,14 @@ void RefereeInterface::ConfigureSimInput(bool enable_sim_input, std::uint64_t si
     sim_input_timeout_ms_ = std::max<std::uint64_t>(1, sim_input_timeout_ms);
 }
 
+void RefereeInterface::ConfigureDecisionStatusInputs(
+    std::uint64_t autoaim_status_timeout_ms, std::uint64_t nav_status_timeout_ms)
+{
+    std::lock_guard<std::mutex> lock(mutex_);
+    autoaim_status_timeout_ms_ = std::max<std::uint64_t>(1, autoaim_status_timeout_ms);
+    nav_status_timeout_ms_ = std::max<std::uint64_t>(1, nav_status_timeout_ms);
+}
+
 void RefereeInterface::UpdateFromStatus(const rm_interfaces::msg::GimbalStatus& status)
 {
     std::lock_guard<std::mutex> lock(mutex_);
@@ -134,6 +152,23 @@ void RefereeInterface::UpdateFromSimInput(const rm_interfaces::msg::SentrySimInp
     latest_sim_input_ = sim_input;
     has_sim_input_ = true;
     last_sim_input_ms_ = SteadyNowMs();
+}
+
+void RefereeInterface::UpdateFromAutoaimTargetStatus(
+    const rm_interfaces::msg::AutoaimTargetStatus& target_status)
+{
+    std::lock_guard<std::mutex> lock(mutex_);
+    latest_autoaim_target_status_ = target_status;
+    has_autoaim_target_status_ = true;
+    last_autoaim_target_status_ms_ = SteadyNowMs();
+}
+
+void RefereeInterface::UpdateFromNavStatus(const rm_interfaces::msg::SentryNavStatus& nav_status)
+{
+    std::lock_guard<std::mutex> lock(mutex_);
+    latest_nav_status_ = nav_status;
+    has_nav_status_ = true;
+    last_nav_status_ms_ = SteadyNowMs();
 }
 
 void RefereeInterface::ObserveDecisionOutput(RobotContext& ctx)
@@ -198,9 +233,19 @@ void RefereeInterface::SyncToContext(RobotContext& ctx)
     const std::uint64_t sim_input_age_ms =
         (!has_sim_input_ || now_ms < last_sim_input_ms_) ? sim_input_timeout_ms_ + 1
                                                          : (now_ms - last_sim_input_ms_);
+    const std::uint64_t autoaim_status_age_ms =
+        (!has_autoaim_target_status_ || now_ms < last_autoaim_target_status_ms_)
+            ? autoaim_status_timeout_ms_ + 1
+            : (now_ms - last_autoaim_target_status_ms_);
+    const std::uint64_t nav_status_age_ms =
+        (!has_nav_status_ || now_ms < last_nav_status_ms_) ? nav_status_timeout_ms_ + 1
+                                                           : (now_ms - last_nav_status_ms_);
     const bool status_fresh = status_age_ms <= status_timeout_ms_;
     const bool use_sim_input =
         enable_sim_input_ && has_sim_input_ && sim_input_age_ms <= sim_input_timeout_ms_;
+    const bool autoaim_status_fresh =
+        has_autoaim_target_status_ && autoaim_status_age_ms <= autoaim_status_timeout_ms_;
+    const bool nav_status_fresh = has_nav_status_ && nav_status_age_ms <= nav_status_timeout_ms_;
 
     MergedSnapshot snapshot;
     snapshot.now_ms = now_ms;
@@ -209,6 +254,15 @@ void RefereeInterface::SyncToContext(RobotContext& ctx)
     snapshot.sim_input_fresh = use_sim_input;
     snapshot.referee_status_age_ms = status_age_ms;
     snapshot.sim_input_age_ms = sim_input_age_ms;
+    snapshot.autoaim_status_age_ms = autoaim_status_age_ms;
+    snapshot.nav_status_age_ms = nav_status_age_ms;
+    if (nav_status_fresh)
+    {
+        snapshot.nav_goal_active = latest_nav_status_.active;
+        snapshot.nav_goal_reached = latest_nav_status_.reached;
+        snapshot.nav_goal_failed = latest_nav_status_.failed;
+        snapshot.current_goal_id = latest_nav_status_.goal_id;
+    }
     snapshot.game_progress = latest_status_.game_progress;
     const bool referee_says_match_started = latest_status_.game_progress == 4;
     snapshot.match_started = status_fresh && referee_says_match_started;
@@ -348,6 +402,22 @@ void RefereeInterface::SyncToContext(RobotContext& ctx)
         snapshot.on_highground = HasBit(rfid, 1) || HasBit(rfid, 2) || HasBit(rfid, 3) ||
                                  HasBit(rfid, 4) || HasBit(rfid, 9) || HasBit(rfid, 10) ||
                                  HasBit(rfid, 11) || HasBit(rfid, 12);
+        if (autoaim_status_fresh)
+        {
+            snapshot.autoaim_has_target = latest_autoaim_target_status_.has_target;
+            snapshot.autoaim_tracking = latest_autoaim_target_status_.tracking;
+            snapshot.autoaim_fire_ready = latest_autoaim_target_status_.fire_ready;
+            snapshot.autoaim_target_distance =
+                std::max(0.0f, latest_autoaim_target_status_.target_distance);
+            raw_enemy_in_view = latest_autoaim_target_status_.has_target ||
+                                latest_autoaim_target_status_.tracking;
+            raw_enemy_confidence =
+                latest_autoaim_target_status_.fire_ready ? 0.90f
+                : latest_autoaim_target_status_.tracking ? 0.75f
+                : latest_autoaim_target_status_.has_target ? 0.60f
+                                                           : 0.0f;
+            raw_enemy_distance_m = snapshot.autoaim_target_distance;
+        }
     }
 
     const bool raw_can_activate_energy = snapshot.can_activate_energy_mechanism;
@@ -385,7 +455,8 @@ void RefereeInterface::SyncToContext(RobotContext& ctx)
         snapshot.match_started && posture_switch_request_pending_;
 
     const bool reliable_enemy_sample =
-        use_sim_input && raw_enemy_in_view && raw_enemy_confidence >= kEnemyConfidenceExit;
+        raw_enemy_in_view && raw_enemy_confidence >= kEnemyConfidenceExit &&
+        (use_sim_input || autoaim_status_fresh);
     if (reliable_enemy_sample)
     {
         if (last_enemy_observation_ms_ == 0)
@@ -413,6 +484,7 @@ void RefereeInterface::SyncToContext(RobotContext& ctx)
     }
 
     if (last_enemy_observation_ms_ == 0 ||
+        (!use_sim_input && !autoaim_status_fresh) ||
         (now_ms - last_enemy_observation_ms_) > enemy_memory_ms_ ||
         enemy_confidence_filtered_ < kEnemyConfidenceExit)
     {
@@ -573,6 +645,16 @@ void RefereeInterface::SyncToContext(RobotContext& ctx)
     ctx.health_data_degraded = snapshot.health_data_degraded;
     ctx.referee_status_age_ms = snapshot.referee_status_age_ms;
     ctx.sim_input_age_ms = snapshot.sim_input_age_ms;
+    ctx.nav_goal_active = snapshot.nav_goal_active;
+    ctx.nav_goal_reached = snapshot.nav_goal_reached;
+    ctx.nav_goal_failed = snapshot.nav_goal_failed;
+    ctx.current_goal_id = snapshot.current_goal_id;
+    ctx.nav_status_age_ms = snapshot.nav_status_age_ms;
+    ctx.autoaim_has_target = snapshot.autoaim_has_target;
+    ctx.autoaim_tracking = snapshot.autoaim_tracking;
+    ctx.autoaim_fire_ready = snapshot.autoaim_fire_ready;
+    ctx.autoaim_target_distance = snapshot.autoaim_target_distance;
+    ctx.autoaim_status_age_ms = snapshot.autoaim_status_age_ms;
     ctx.posture_accumulated_ms = snapshot.posture_accumulated_ms;
     ctx.posture_debuffed = snapshot.posture_debuffed;
     ctx.posture_debuff_threshold_ms = snapshot.posture_debuff_threshold_ms;
