@@ -103,11 +103,9 @@ def generate_launch_description():
     no_slam = _is_false("slam")
     use_slam = _is_true("slam")
     small_gicp_enabled = _and(_is_false("slam"), _is_true("enable_small_gicp"))
-    static_map_to_odom_enabled = _or(
-        _is_true("slam"),
-        _and(_is_false("slam"), _is_false("enable_small_gicp")),
-    )
-    cmd_bridge_enabled = _is_true("enable_cmd_bridge")
+    static_map_to_odom_enabled = _and(_is_false("slam"), _is_false("enable_small_gicp"))
+    nav2_navigation_enabled = no_slam
+    cmd_bridge_enabled = _and(_is_true("enable_cmd_bridge"), no_slam)
     rviz_enabled = _is_true("use_rviz")
     second_lidar_safety_enabled = _is_true("enable_second_lidar_safety")
     second_lidar_safety_disabled = _is_false("enable_second_lidar_safety")
@@ -551,6 +549,7 @@ def generate_launch_description():
             name="controller_server",
             output="screen",
             namespace=namespace,
+            condition=IfCondition(nav2_navigation_enabled),
             respawn=use_respawn,
             respawn_delay=2.0,
             parameters=[configured_params],
@@ -563,6 +562,7 @@ def generate_launch_description():
             name="smoother_server",
             output="screen",
             namespace=namespace,
+            condition=IfCondition(nav2_navigation_enabled),
             respawn=use_respawn,
             respawn_delay=2.0,
             parameters=[configured_params],
@@ -574,6 +574,7 @@ def generate_launch_description():
             name="planner_server",
             output="screen",
             namespace=namespace,
+            condition=IfCondition(nav2_navigation_enabled),
             respawn=use_respawn,
             respawn_delay=2.0,
             parameters=[configured_params],
@@ -585,6 +586,7 @@ def generate_launch_description():
             name="behavior_server",
             output="screen",
             namespace=namespace,
+            condition=IfCondition(nav2_navigation_enabled),
             respawn=use_respawn,
             respawn_delay=2.0,
             parameters=[configured_params],
@@ -596,6 +598,7 @@ def generate_launch_description():
             name="bt_navigator",
             output="screen",
             namespace=namespace,
+            condition=IfCondition(nav2_navigation_enabled),
             respawn=use_respawn,
             respawn_delay=2.0,
             parameters=[configured_params],
@@ -607,6 +610,7 @@ def generate_launch_description():
             name="waypoint_follower",
             output="screen",
             namespace=namespace,
+            condition=IfCondition(nav2_navigation_enabled),
             respawn=use_respawn,
             respawn_delay=2.0,
             parameters=[configured_params],
@@ -618,6 +622,7 @@ def generate_launch_description():
             name="velocity_smoother",
             output="screen",
             namespace=namespace,
+            condition=IfCondition(nav2_navigation_enabled),
             respawn=use_respawn,
             respawn_delay=2.0,
             parameters=[configured_params],
@@ -633,6 +638,7 @@ def generate_launch_description():
             name="lifecycle_manager_navigation",
             output="screen",
             namespace=namespace,
+            condition=IfCondition(nav2_navigation_enabled),
             parameters=[
                 {"use_sim_time": use_sim_time},
                 {"autostart": autostart},

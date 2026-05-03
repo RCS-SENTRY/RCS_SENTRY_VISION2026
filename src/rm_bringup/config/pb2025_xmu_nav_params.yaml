@@ -198,6 +198,7 @@ pointcloud_to_laserscan:
     range_min: 0.3
     range_max: 10.0
     use_inf: true
+    output_reliability: reliable
 
 slam_toolbox:
   ros__parameters:
@@ -353,13 +354,13 @@ controller_server:
     general_goal_checker:
       stateful: True
       plugin: "nav2_controller::SimpleGoalChecker"
-      xy_goal_tolerance: 0.15
+      xy_goal_tolerance: 0.3
       yaw_goal_tolerance: 6.28
     FollowPath:
       plugin: "pb_omni_pid_pursuit_controller::OmniPidPursuitController"
-      translation_kp: 3.0
-      translation_ki: 0.1
-      translation_kd: 0.3
+      translation_kp: 6.0
+      translation_ki: 1.4
+      translation_kd: 2.25
       enable_rotation: false
       rotation_kp: 3.0
       rotation_ki: 0.1
@@ -369,13 +370,13 @@ controller_server:
       lookahead_dist: 2.0
       use_velocity_scaled_lookahead_dist: true
       lookahead_time: 1.0
-      min_lookahead_dist: 0.5
+      min_lookahead_dist: 0.3
       max_lookahead_dist: 1.0
       use_interpolation: false
       use_rotate_to_heading: false
       use_rotate_to_heading_treshold: 0.1
-      min_approach_linear_velocity: 0.5
-      approach_velocity_scaling_dist: 1.0
+      min_approach_linear_velocity: 0.05
+      approach_velocity_scaling_dist: 1.5
       v_linear_min: -2.5
       v_linear_max: 2.5
       v_angular_min: -3.0

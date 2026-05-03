@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 
 import math
+import time
 
 import rclpy
 from action_msgs.msg import GoalStatus, GoalStatusArray
@@ -28,6 +29,8 @@ class PbCmdVelToNavCmd(Node):
         self.declare_parameter("goal_reached_latch_sec", 1.0)
         self.declare_parameter("force_zero_angular_z", True)
         self.declare_parameter("invert_linear_y", False)
+        self.declare_parameter("shutdown_zero_burst_count", 8)
+        self.declare_parameter("shutdown_zero_burst_interval_sec", 0.02)
 
         input_topic = str(self.get_parameter("input_topic").value)
         output_topic = str(self.get_parameter("output_topic").value)
@@ -46,11 +49,24 @@ class PbCmdVelToNavCmd(Node):
             self.get_parameter("force_zero_angular_z").value
         )
         self.invert_linear_y = bool(self.get_parameter("invert_linear_y").value)
+        self.shutdown_zero_burst_count = int(
+            self.get_parameter("shutdown_zero_burst_count").value
+        )
+        self.shutdown_zero_burst_interval_sec = float(
+            self.get_parameter("shutdown_zero_burst_interval_sec").value
+        )
 
         if publish_rate_hz <= 1e-6 or not math.isfinite(publish_rate_hz):
             publish_rate_hz = 20.0
         if self.goal_reached_latch_sec < 0.0:
             self.goal_reached_latch_sec = 0.0
+        if self.shutdown_zero_burst_count < 1:
+            self.shutdown_zero_burst_count = 1
+        if (
+            self.shutdown_zero_burst_interval_sec < 0.0
+            or not math.isfinite(self.shutdown_zero_burst_interval_sec)
+        ):
+            self.shutdown_zero_burst_interval_sec = 0.02
 
         self.nav_cmd_pub = self.create_publisher(
             NavCmd, output_topic, QoSPresetProfiles.SENSOR_DATA.value
@@ -145,6 +161,16 @@ class PbCmdVelToNavCmd(Node):
         nav.is_reached = int(is_reached)
         return nav
 
+    def publish_shutdown_zero_burst(self) -> None:
+        zero = self.twist_to_nav_cmd(Twist(), is_reached=0)
+        for _ in range(self.shutdown_zero_burst_count):
+            self.nav_cmd_pub.publish(zero)
+            try:
+                rclpy.spin_once(self, timeout_sec=0.0)
+            except Exception:
+                pass
+            time.sleep(self.shutdown_zero_burst_interval_sec)
+
 
 def main(args=None) -> None:
     rclpy.init(args=args)
@@ -155,7 +181,8 @@ def main(args=None) -> None:
         pass
     finally:
         try:
-            node.nav_cmd_pub.publish(node.twist_to_nav_cmd(Twist(), is_reached=0))
+            node.get_logger().info("Shutdown requested; publishing zero NavCmd burst")
+            node.publish_shutdown_zero_burst()
         except Exception:
             pass
         node.destroy_node()

@@ -8,6 +8,7 @@
 // ★ 线程规范：所有 publish() 仅在 Executor 线程（Timer 回调）中执行。
 // =============================================================================
 #include <atomic>
+#include <chrono>
 #include <cmath>
 #include <condition_variable>
 #include <cstring>
@@ -15,6 +16,7 @@
 #include <mutex>
 #include <queue>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include <rclcpp/rclcpp.hpp>
@@ -139,22 +141,47 @@ public:
 
   ~HwBridgeNode() override
   {
-    // 析构时发送安全停止帧
-    try {
-      VisionToNucFrame safe{};
-      safe.head[0] = 'S'; safe.head[1] = 'P';
-      safe.crc16_TJ = rm_hw_bridge::compute_crc16(
-        reinterpret_cast<uint8_t *>(&safe), sizeof(safe) - 2);
-      serial_->write(reinterpret_cast<uint8_t *>(&safe), sizeof(safe));
-
-      NavToNucFrame safe_nav{};
-      safe_nav.crc16_TJ = rm_hw_bridge::compute_crc16(
-        reinterpret_cast<uint8_t *>(&safe_nav), sizeof(safe_nav) - 2);
-      serial_->write(reinterpret_cast<uint8_t *>(&safe_nav), sizeof(safe_nav));
-    } catch (...) {}
+    send_shutdown_safe_frames();
   }
 
 private:
+  void send_shutdown_safe_frames()
+  {
+    if (!serial_) {
+      return;
+    }
+
+    try {
+      VisionToNucFrame safe_gimbal{};
+      safe_gimbal.head[0] = 'S';
+      safe_gimbal.head[1] = 'P';
+      safe_gimbal.mode_TJ = 0;
+      safe_gimbal.state_switch_TJ = 1;
+      safe_gimbal.fire_control_TJ = 0;
+      safe_gimbal.crc16_TJ = rm_hw_bridge::compute_crc16(
+        reinterpret_cast<uint8_t *>(&safe_gimbal), sizeof(safe_gimbal) - 2);
+
+      NavToNucFrame safe_nav{};
+      safe_nav.linear_x = 0.0f;
+      safe_nav.linear_y = 0.0f;
+      safe_nav.angular_z = 0.0f;
+      safe_nav.isReached = 0;
+      safe_nav.crc16_TJ = rm_hw_bridge::compute_crc16(
+        reinterpret_cast<uint8_t *>(&safe_nav), sizeof(safe_nav) - 2);
+
+      RCLCPP_INFO(get_logger(), "Shutdown requested; sending zero-speed safe frames");
+      for (int i = 0; i < 8; ++i) {
+        serial_->write(reinterpret_cast<uint8_t *>(&safe_gimbal), sizeof(safe_gimbal));
+        serial_->write(reinterpret_cast<uint8_t *>(&safe_nav), sizeof(safe_nav));
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+      }
+    } catch (const std::exception & ex) {
+      RCLCPP_WARN(get_logger(), "Failed to send shutdown safe frames: %s", ex.what());
+    } catch (...) {
+      RCLCPP_WARN(get_logger(), "Failed to send shutdown safe frames");
+    }
+  }
+
   // =========================================================================
   //  Timer 回调 — Executor 线程中消费队列并 publish
   // =========================================================================
