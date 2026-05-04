@@ -1,3 +1,8 @@
+// Copyright Chen Jun 2023. Licensed under the MIT License.
+//
+// Additional modifications and features by Chengfu Zou, Labor. Licensed under
+// Apache License 2.0.
+//
 // Copyright (C) FYT Vision Group. All rights reserved.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
@@ -12,13 +17,15 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 //
-// RCS V3 adaptation: CSU-style armor-point tracking state machine. Unlike the
-// legacy IMM backend, this production tracker outputs the shootable armor point.
+// RCS V3 adaptation of CSU-FYT armor_solver::Tracker. The FYT state layout and
+// armor measurement model are preserved; this version uses a local Eigen EKF
+// with numeric Jacobians to avoid importing FYT ROS messages/rm_utils/Ceres.
 
 #ifndef RM_AUTOAIM__CORE__CSU_ARMOR_TRACKER_HPP_
 #define RM_AUTOAIM__CORE__CSU_ARMOR_TRACKER_HPP_
 
 #include <optional>
+#include <string>
 #include <vector>
 
 #include <Eigen/Dense>
@@ -28,15 +35,28 @@
 namespace rm_autoaim
 {
 
+enum class ArmorsNum
+{
+  NORMAL_4 = 4,
+  BALANCE_2 = 2,
+  OUTPOST_3 = 3,
+};
+
 struct CsuArmorTrackerParams
 {
   double max_match_distance = 0.5;
+  double max_match_yaw_diff = 1.0;
   double max_lost_time = 0.3;
   int min_detect_count = 2;
   int min_tracking_count_for_fire = 3;
-  double process_noise_pos = 0.04;
-  double process_noise_vel = 1.0;
-  double measurement_noise = 0.05;
+  double default_radius = 0.26;
+  double min_radius = 0.12;
+  double max_radius = 0.40;
+  double q_xyz = 0.05;
+  double q_yaw = 0.10;
+  double q_radius = 0.02;
+  double r_xyz = 0.05;
+  double r_yaw = 0.15;
 };
 
 class CsuArmorTracker
@@ -57,38 +77,59 @@ public:
 
   AimTarget markLost(double stamp_sec, double predict_delay_sec);
 
-  CsuTrackerState state() const { return state_; }
+  CsuTrackerState state() const { return tracker_state_; }
   int trackingFrames() const { return tracking_frames_; }
-  int targetId() const { return target_id_; }
-  std::string targetArmorType() const { return target_armor_type_; }
+  int targetId() const { return tracked_id_; }
+  std::string targetArmorType() const { return tracked_armor_type_; }
   Eigen::Vector3d lastSelectedPosition() const { return last_selected_position_; }
   Eigen::Vector3d predictedPosition(double stamp_sec, double predict_delay_sec) const;
   bool initialized() const { return initialized_; }
 
 private:
-  using StateVec = Eigen::Matrix<double, 6, 1>;
-  using StateMat = Eigen::Matrix<double, 6, 6>;
-  using MeasureMat = Eigen::Matrix<double, 3, 3>;
+  static constexpr int X_N = 10;
+  static constexpr int Z_N = 4;
+  using StateVec = Eigen::Matrix<double, X_N, 1>;
+  using StateMat = Eigen::Matrix<double, X_N, X_N>;
+  using MeasureVec = Eigen::Matrix<double, Z_N, 1>;
+  using MeasureMat = Eigen::Matrix<double, Z_N, Z_N>;
 
   void init(const ArmorObservation & observation, double stamp_sec);
-  StateVec predictState(double stamp_sec, double predict_delay_sec) const;
-  StateMat transition(double dt) const;
   void predictInPlace(double stamp_sec);
-  bool finiteState(const StateVec & state) const;
-  AimTarget makeTarget(const StateVec & state, double confidence, const std::string & source) const;
+  void updateEkf(const ArmorObservation & observation);
+  void handleArmorJump(const ArmorObservation & observation);
+
+  StateVec processModel(const StateVec & x, double dt) const;
+  MeasureVec measureModel(const StateVec & x) const;
+  StateMat numericalF(const StateVec & x, double dt) const;
+  Eigen::Matrix<double, Z_N, X_N> numericalH(const StateVec & x) const;
+
+  AimTarget makeTarget(double stamp_sec, double predict_delay_sec, double confidence,
+    const std::string & source) const;
+  Eigen::Vector3d armorPositionFromState(const StateVec & x) const;
+  ArmorsNum inferArmorsNum(const ArmorObservation & observation) const;
+
+  static double normalizeAngle(double angle);
+  static double shortestAngularDistance(double from, double to);
+  static bool finiteState(const StateVec & state);
 
   CsuArmorTrackerParams params_;
-  CsuTrackerState state_ = CsuTrackerState::LOST;
+  CsuTrackerState tracker_state_ = CsuTrackerState::LOST;
   bool initialized_ = false;
   StateVec x_ = StateVec::Zero();
   StateMat P_ = StateMat::Identity();
   double last_stamp_sec_ = 0.0;
   double last_detection_stamp_sec_ = 0.0;
   int detect_count_ = 0;
+  int lost_count_ = 0;
   int tracking_frames_ = 0;
-  int target_id_ = -1;
-  std::string target_label_;
-  std::string target_armor_type_ = "small";
+  int tracked_id_ = -1;
+  std::string tracked_label_;
+  std::string tracked_armor_type_ = "small";
+  ArmorsNum tracked_armors_num_ = ArmorsNum::NORMAL_4;
+  double last_yaw_ = 0.0;
+  double another_r_ = 0.26;
+  double d_za_ = 0.0;
+  double d_zc_ = 0.0;
   Eigen::Vector3d last_selected_position_ = Eigen::Vector3d::Zero();
 };
 

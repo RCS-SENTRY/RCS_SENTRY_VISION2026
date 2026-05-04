@@ -18,21 +18,10 @@ find_package(OpenCV REQUIRED)
 # ---- Eigen3 ----
 find_package(Eigen3 REQUIRED)
 
-# ---- 追踪器库 (纯数学，零 ROS 依赖) ----
-add_library(imm_ukf_tracker STATIC
-  src/imm_ukf_tracker.cpp
-)
-target_include_directories(imm_ukf_tracker PUBLIC
-  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
-  $<INSTALL_INTERFACE:include>
-)
-target_link_libraries(imm_ukf_tracker
-  Eigen3::Eigen
-)
-
 # ---- 自瞄节点 ----
 add_executable(autoaim_node
   src/autoaim_node.cpp
+  src/core/armor_pose_estimator.cpp
   src/core/csu_armor_tracker.cpp
   src/core/manual_compensator.cpp
 )
@@ -53,7 +42,6 @@ ament_target_dependencies(autoaim_node
 
 target_link_libraries(autoaim_node
   ${OpenCV_LIBS}
-  imm_ukf_tracker
   Eigen3::Eigen
 )
 

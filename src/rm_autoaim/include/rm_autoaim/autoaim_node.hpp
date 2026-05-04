@@ -16,7 +16,6 @@
 #include <cstdint>
 #include <mutex>
 #include <string>
-#include <unordered_set>
 #include <vector>
 
 #include <rclcpp/rclcpp.hpp>
@@ -31,8 +30,8 @@
 #include <opencv2/opencv.hpp>
 #include <opencv2/core/quaternion.hpp>
 
-#include "rm_autoaim/imm_ukf_tracker.hpp"
 #include "rm_autoaim/aimer.hpp"
+#include "rm_autoaim/core/armor_pose_estimator.hpp"
 #include "rm_autoaim/core/csu_armor_tracker.hpp"
 #include "rm_autoaim/core/manual_compensator.hpp"
 
@@ -84,18 +83,7 @@ private:
   /// 四元数 SLERP
   static cv::Quatd slerp(const cv::Quatd & q0, const cv::Quatd & q1, double t);
 
-  /// PnP 求解 (IPPE + ITERATIVE 精炼)
-  bool solve_pnp(
-    const rm_interfaces::msg::ArmorDetection & armor,
-    cv::Vec3d & rvec, cv::Vec3d & tvec);
-
-  /// 坐标变换: P_cam → P_world
-  cv::Point3d transform_to_world(
-    const cv::Vec3d & p_cam,
-    const cv::Quatd & q_gimbal_to_world);
-
   static const char * track_state_name(AutoaimTrackState state);
-  static std::string armor_type_from_detection(const rm_interfaces::msg::ArmorDetection & armor);
 
   void publish_fire_debug(
     const std::string & backend,
@@ -146,12 +134,6 @@ private:
   double imu_buffer_duration_;
   bool pnp_refine_;
   bool use_imu_world_transform_ = false;
-  bool enable_prediction_consistency_guard_ = true;
-  double prediction_consistency_guard_deg_ = 25.0;
-  bool enable_ray_consistency_guard_ = true;
-  double ray_consistency_guard_deg_ = 10.0;
-  bool allow_fire_on_prediction_fallback_ = true;
-  bool allow_fire_on_ray_fallback_ = false;
   std::string tracker_backend_ = "csu_tracker";
   bool enable_raw_pnp_fallback_ = true;
   bool raw_pnp_fallback_on_tracker_lost_ = true;
@@ -165,17 +147,12 @@ private:
   // ===========================================================================
   // Tracker + Aimer
   // ===========================================================================
-  UKFParams ukf_params_;
-  // Legacy IMM-UKF is retained only for experiments. V3 production defaults to
-  // csu_tracker, which outputs a shootable armor point.
-  ImmUkfTracker tracker_;
+  ArmorPoseEstimator pose_estimator_;
   CsuArmorTracker csu_tracker_;
   CsuArmorTrackerParams csu_tracker_params_;
   ManualCompensator manual_compensator_;
   Aimer aimer_;
   int tracker_frame_count_ = 0;
-  bool last_ray_guard_active_ = false;
-  bool last_prediction_guard_active_ = false;
   AutoaimTrackState track_state_{AutoaimTrackState::LOST};
   rclcpp::Time last_detection_time_;
   bool has_last_detection_{false};

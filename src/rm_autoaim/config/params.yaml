@@ -51,28 +51,9 @@ rm_autoaim:
     gimbal_status_topic: "/gimbal_status"
 
     # ---- 跟踪坐标系模式 ----
-    # false: Tracker/Aimer 在“当前云台系”工作，Aimer 会用 /gimbal_status
-    #        把相对视线角转换成绝对 /gimbal_cmd 角后再发布
-    # true : Tracker/Aimer 在 IMU 世界/惯性系工作，inverseKinematics 直接输出绝对角
-    # 无论哪种模式，最终 /gimbal_cmd.target_yaw/target_pitch 都必须与
-    # /gimbal_status.gimbal_yaw/gimbal_pitch 处于同一绝对角语义
+    # V3 生产链在当前云台系(gimbal frame)输出 AimTarget。保留该参数只为
+    # 兼容旧 launch/调试配置，默认不要开启。
     use_imu_world_transform: false
-
-    # ---- 预测一致性护栏 ----
-    # 同时计算 raw PnP 直瞄角 与 tracker 预测角；
-    # 若两者差距离谱，说明 tracker 或坐标链路已失真：
-    #   - 本帧改用 raw PnP 指向
-    #   - 强制 fire_control=0
-    enable_prediction_consistency_guard: true
-    prediction_consistency_guard_deg: 25.0
-
-    # ---- 射线一致性护栏 ----
-    # 用像素中心射线(内参+外参旋转)直接解出角度，与 raw PnP 角做对照。
-    # 若两者差距过大，说明 PnP 平面解/几何链路异常：
-    #   - 本帧改用 ray 角输出
-    #   - 强制 fire_control=0
-    enable_ray_consistency_guard: true
-    ray_consistency_guard_deg: 10.0
 
     # ---- Tracker lifecycle ----
     temp_lost_timeout_sec: 0.30
@@ -80,22 +61,19 @@ rm_autoaim:
     hold_last_cmd_in_temp_lost: true
 
     # ---- V3 tracker backend ----
-    # raw_pnp / csu_tracker / legacy_imm
+    # raw_pnp / csu_tracker
     tracker_backend: "csu_tracker"
     enable_raw_pnp_fallback: true
     raw_pnp_fallback_on_tracker_lost: true
     fallback_jump_guard_m: 1.0
 
-    # ---- Fallback fire policy ----
-    allow_fire_on_prediction_fallback: true
-    allow_fire_on_ray_fallback: false
-
     # ---- ManualCompensator: distance(m) -> angle offset(rad) LUT ----
     # ROS 2 Humble parameters are flat arrays, stored as [distance, offset, ...].
+    # Pitch LUT 是赛前生产链唯一 pitch/yaw 手动补偿入口，后续按 2m/5m 实测填写。
     manual_compensator:
       enabled: true
       pitch_lut: [2.0, -0.222, 3.0, -0.222, 4.0, -0.222, 5.0, -0.222]
-      yaw_lut: [2.0, -0.002, 5.0, -0.002]
+      yaw_lut: [2.0, 0.0, 5.0, 0.0]
       clamp_min_distance: 0.5
       clamp_max_distance: 8.0
 
@@ -103,35 +81,29 @@ rm_autoaim:
       min_detect_count: 2
       min_tracking_count_for_fire: 3
       max_match_distance: 0.5
+      max_match_yaw_diff: 1.0
       max_lost_time: 0.3
       fire_max_distance: 8.0
+      default_radius: 0.26
+      min_radius: 0.12
+      max_radius: 0.40
+      q_xyz: 0.05
+      q_yaw: 0.10
+      q_radius: 0.02
+      r_xyz: 0.05
+      r_yaw: 0.15
+
+    fire:
       allow_fire_on_raw_pnp_fallback: false
       allow_fire_on_csu_tracker: true
 
     # =====================================================================
-    # legacy IMM-UKF params, deprecated in V3 production path
-    # tune_ukf.py Top1 (2026-04-10): J=0.5058
-    # =====================================================================
-    ukf:
-      alpha: 0.1
-      beta: 2.0
-      kappa: 0.0
-      q_pos: 0.1
-      q_vel: 0.1
-      q_r: 0.005
-      q_phi: 0.05
-      q_omega: 0.05
-      r_pos: 0.1
-      markov_00: 0.95
-      markov_11: 0.95
-      init_prob_cv: 0.6
-
-    # =====================================================================
-    # Aimer 参数 — 物理前馈 + 火控
+    # Aimer 参数 — AimTarget 逆运动学 + 火控
     # =====================================================================
 
-    # ---- 物理常量 ----
-    gravity: 9.81                # 重力加速度 (m/s²)
+    # ---- 时间前馈 ----
+    # V3 生产链不使用解析弹道或多项式叠加补偿。
+    # yaw/pitch 静态修正只走 manual_compensator LUT。
     bullet_speed_default: 24.0       # 默认弹丸速度 (m/s)
     fire_delay: 0.05                 # 系统总延迟 (s), 含图像+串口+云台
     # yaw 常量偏置 (rad): 正=命令更向左, 负=命令更向右
@@ -160,10 +132,3 @@ rm_autoaim:
     fire_min_frames: 3
     # 最大开火距离 (m)
     fire_max_distance: 8.0
-
-    # ---- 弹道补偿 LUT 系数 (预留) ----
-    # pitch_offset = k0 + k1*d + k2*d² + 解析模型
-    # 默认全 0, 后续可手动标定
-    pitch_offset_k0: -0.082
-    pitch_offset_k1: 0.0
-    pitch_offset_k2: 0.0

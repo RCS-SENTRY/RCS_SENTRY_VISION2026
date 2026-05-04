@@ -24,12 +24,14 @@ struct AimTarget
 struct ArmorObservation
 {
   Eigen::Vector3d position_gimbal = Eigen::Vector3d::Zero();
+  double yaw = 0.0;
   double distance = 0.0;
   double confidence = 0.0;
   int class_id = -1;
   std::string label;
   std::string armor_type = "small";
   double center_axis_error_px = 0.0;
+  bool valid = false;
 };
 
 enum class CsuTrackerState
