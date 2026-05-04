@@ -7,9 +7,9 @@
 //     → slerp(Q_before, Q_after, α)     // SLERP 四元数插值
 //     → solve_pnp(apexes)               // PnP 求解 P_cam
 //     → transform_to_world(P_cam, Q)    // 相机系→当前云台系 / 世界惯性系
-//     → tracker_.update(p_world, t)     // IMM-UKF 观测更新
-//     → tracker_.predict(t + Δt)        // 前馈预测
-//     → aimer_.solve(...)               // 物理逆运动学 + 火控判定
+//     → CsuArmorTracker/raw_pnp         // 输出可击打 AimTarget
+//     → ManualCompensator               // yaw/pitch LUT
+//     → aimer_.solve(AimTarget, ...)    // 逆运动学 + 火控判定
 //     → publish(GimbalCmd)              // 发布控制指令
 // =============================================================================
 #include "rm_autoaim/autoaim_node.hpp"
@@ -18,6 +18,7 @@
 #include <cmath>
 #include <chrono>
 #include <iomanip>
+#include <limits>
 #include <sstream>
 
 using ArmorDetection = rm_interfaces::msg::ArmorDetection;
@@ -50,6 +51,32 @@ double positive_or_default(double value, double fallback, const char * name, rcl
   return value;
 }
 
+std::vector<std::pair<double, double>> pair_lut_from_flat(
+  const std::vector<double> & flat,
+  const std::vector<std::pair<double, double>> & fallback,
+  const char * name,
+  rclcpp::Logger logger)
+{
+  if (flat.empty()) return fallback;
+  if (flat.size() % 2 != 0) {
+    RCLCPP_WARN(logger, "%s must contain distance/offset pairs, using fallback LUT", name);
+    return fallback;
+  }
+  std::vector<std::pair<double, double>> lut;
+  lut.reserve(flat.size() / 2);
+  for (std::size_t i = 0; i + 1 < flat.size(); i += 2) {
+    lut.emplace_back(flat[i], flat[i + 1]);
+  }
+  return lut;
+}
+
+std::string vec_to_debug(const Eigen::Vector3d & v)
+{
+  std::ostringstream ss;
+  ss << "[" << v.x() << "," << v.y() << "," << v.z() << "]";
+  return ss.str();
+}
+
 }  // namespace
 
 // =============================================================================
@@ -59,6 +86,7 @@ AutoaimNode::AutoaimNode(const rclcpp::NodeOptions & options)
 : Node("rm_autoaim", options),
   ukf_params_(),
   tracker_(ukf_params_),
+  csu_tracker_(csu_tracker_params_),
   aimer_()
 {
   // ===================== PnP 参数 =====================
@@ -152,6 +180,28 @@ AutoaimNode::AutoaimNode(const rclcpp::NodeOptions & options)
   this->declare_parameter<std::string>("target_status_topic", "/autoaim/target_status");
   this->declare_parameter<std::string>("imu_topic", "/imu/data");
   this->declare_parameter<std::string>("gimbal_status_topic", "/gimbal_status");
+  this->declare_parameter<std::string>("tracker_backend", "csu_tracker");
+  this->declare_parameter<bool>("enable_raw_pnp_fallback", true);
+  this->declare_parameter<bool>("raw_pnp_fallback_on_tracker_lost", true);
+  this->declare_parameter<double>("fallback_jump_guard_m", 1.0);
+
+  this->declare_parameter<bool>("manual_compensator.enabled", true);
+  this->declare_parameter<std::vector<double>>(
+    "manual_compensator.pitch_lut",
+    {2.0, -0.222, 3.0, -0.222, 4.0, -0.222, 5.0, -0.222});
+  this->declare_parameter<std::vector<double>>(
+    "manual_compensator.yaw_lut",
+    {2.0, -0.002, 5.0, -0.002});
+  this->declare_parameter<double>("manual_compensator.clamp_min_distance", 0.5);
+  this->declare_parameter<double>("manual_compensator.clamp_max_distance", 8.0);
+
+  this->declare_parameter<double>("tracker.max_match_distance", 0.5);
+  this->declare_parameter<double>("tracker.max_lost_time", 0.3);
+  this->declare_parameter<int>("tracker.min_detect_count", 2);
+  this->declare_parameter<int>("tracker.min_tracking_count_for_fire", 3);
+  this->declare_parameter<double>("tracker.fire_max_distance", 8.0);
+  this->declare_parameter<bool>("tracker.allow_fire_on_raw_pnp_fallback", false);
+  this->declare_parameter<bool>("tracker.allow_fire_on_csu_tracker", true);
 
   world_frame_id_      = this->get_parameter("world_frame_id").as_string();
   imu_buffer_duration_ = this->get_parameter("imu_buffer_duration").as_double();
@@ -186,6 +236,43 @@ AutoaimNode::AutoaimNode(const rclcpp::NodeOptions & options)
     this->get_parameter("allow_fire_on_ray_fallback").as_bool();
   enable_target_status_ =
     this->get_parameter("enable_target_status").as_bool();
+  tracker_backend_ = this->get_parameter("tracker_backend").as_string();
+  enable_raw_pnp_fallback_ =
+    this->get_parameter("enable_raw_pnp_fallback").as_bool();
+  raw_pnp_fallback_on_tracker_lost_ =
+    this->get_parameter("raw_pnp_fallback_on_tracker_lost").as_bool();
+  fallback_jump_guard_m_ = positive_or_default(
+    this->get_parameter("fallback_jump_guard_m").as_double(), 1.0,
+    "fallback_jump_guard_m", get_logger());
+
+  csu_tracker_params_.max_match_distance = positive_or_default(
+    this->get_parameter("tracker.max_match_distance").as_double(), 0.5,
+    "tracker.max_match_distance", get_logger());
+  csu_tracker_params_.max_lost_time = positive_or_default(
+    this->get_parameter("tracker.max_lost_time").as_double(), 0.3,
+    "tracker.max_lost_time", get_logger());
+  csu_tracker_params_.min_detect_count = std::max(
+    1, static_cast<int>(this->get_parameter("tracker.min_detect_count").as_int()));
+  csu_tracker_params_.min_tracking_count_for_fire = std::max(
+    1, static_cast<int>(
+      this->get_parameter("tracker.min_tracking_count_for_fire").as_int()));
+  csu_tracker_.configure(csu_tracker_params_);
+
+  const auto pitch_lut = pair_lut_from_flat(
+    this->get_parameter("manual_compensator.pitch_lut").as_double_array(),
+    {{2.0, -0.222}, {3.0, -0.222}, {4.0, -0.222}, {5.0, -0.222}},
+    "manual_compensator.pitch_lut", get_logger());
+  const auto yaw_lut = pair_lut_from_flat(
+    this->get_parameter("manual_compensator.yaw_lut").as_double_array(),
+    {{2.0, -0.002}, {5.0, -0.002}},
+    "manual_compensator.yaw_lut", get_logger());
+  manual_compensator_.configure(
+    this->get_parameter("manual_compensator.enabled").as_bool(),
+    pitch_lut,
+    yaw_lut,
+    this->get_parameter("manual_compensator.clamp_min_distance").as_double(),
+    this->get_parameter("manual_compensator.clamp_max_distance").as_double());
+
   const std::string target_status_topic =
     this->get_parameter("target_status_topic").as_string();
   const std::string imu_topic = this->get_parameter("imu_topic").as_string();
@@ -322,6 +409,10 @@ AutoaimNode::AutoaimNode(const rclcpp::NodeOptions & options)
     this->get_parameter("max_fire_window_deg").as_double();
   aimer_params.fire_min_frames  = this->get_parameter("fire_min_frames").as_int();
   aimer_params.fire_max_distance = this->get_parameter("fire_max_distance").as_double();
+  aimer_params.fire_min_frames = std::max(
+    aimer_params.fire_min_frames,
+    static_cast<int>(this->get_parameter("tracker.min_tracking_count_for_fire").as_int()));
+  aimer_params.fire_max_distance = this->get_parameter("tracker.fire_max_distance").as_double();
 
   aimer_params.pitch_offset_k0  = this->get_parameter("pitch_offset_k0").as_double();
   aimer_params.pitch_offset_k1  = this->get_parameter("pitch_offset_k1").as_double();
@@ -352,6 +443,9 @@ AutoaimNode::AutoaimNode(const rclcpp::NodeOptions & options)
   gimbal_cmd_pub_ = this->create_publisher<GimbalCmd>(
     "/gimbal_cmd", rclcpp::SensorDataQoS());
 
+  gimbal_cmd_raw_pub_ = this->create_publisher<GimbalCmd>(
+    "/autoaim/gimbal_cmd_raw", rclcpp::SensorDataQoS());
+
   fire_debug_pub_ = this->create_publisher<std_msgs::msg::String>(
     "/autoaim/debug_fire_gate", rclcpp::SensorDataQoS());
 
@@ -361,8 +455,9 @@ AutoaimNode::AutoaimNode(const rclcpp::NodeOptions & options)
   }
 
   RCLCPP_INFO(get_logger(),
-    "rm_autoaim initialized. tracking_frame=%s bullet=%.1fm/s delay=%.3fs "
+    "rm_autoaim initialized. backend=%s tracking_frame=%s bullet=%.1fm/s delay=%.3fs "
     "K[fx=%.1f fy=%.1f cx=%.1f cy=%.1f]",
+    tracker_backend_.c_str(),
     use_imu_world_transform_ ? "imu_world" : "current_gimbal",
     aimer_params.bullet_speed,
     aimer_params.fire_delay,
@@ -385,21 +480,38 @@ const char * AutoaimNode::track_state_name(AutoaimTrackState state)
   return "UNKNOWN";
 }
 
+std::string AutoaimNode::armor_type_from_detection(const ArmorDetection & armor)
+{
+  const std::string label = armor.label;
+  if (label.find("large") != std::string::npos || label.find("big") != std::string::npos) {
+    return "large";
+  }
+
+  static const std::unordered_set<int> kBigArmorClassIds = {
+    21, 22, 23, 24, 29, 30, 31, 32, 33, 34, 35, 36, 37,
+  };
+  return kBigArmorClassIds.count(armor.class_id) > 0 ? "large" : "small";
+}
+
 void AutoaimNode::publish_fire_debug(
+  const std::string & backend,
   const std::string & aim_source,
-  bool alignment_ready,
-  bool tracker_ready,
-  bool ray_guard,
-  bool prediction_guard,
-  bool fallback_allows_fire,
+  int target_id,
+  const std::string & armor_type,
+  const Eigen::Vector3d & raw_pnp_pos,
+  const Eigen::Vector3d & tracker_pos,
+  const Eigen::Vector3d & selected_pos,
   int fire_control,
-  double model_prob_cv,
-  double model_prob_ctrv,
   double target_distance,
+  double yaw_cmd,
+  double pitch_cmd,
   double cmd_yaw_err_deg,
   double cmd_pitch_err_deg,
+  double manual_yaw_offset,
+  double manual_pitch_offset,
   double yaw_window,
   double pitch_window,
+  const std::string & tracker_state,
   const std::string & reason,
   double age_sec)
 {
@@ -408,23 +520,27 @@ void AutoaimNode::publish_fire_debug(
   std_msgs::msg::String debug_msg;
   std::ostringstream ss;
   ss << std::fixed << std::setprecision(3)
-     << "state=" << track_state_name(track_state_)
+     << "backend=" << backend
      << " source=" << aim_source
-     << " fire=" << fire_control
-     << " can_fire=" << ((alignment_ready && tracker_ready) ? 1 : 0)
-     << " alignment_ready=" << (alignment_ready ? 1 : 0)
-     << " tracker_ready=" << (tracker_ready ? 1 : 0)
-     << " ray_guard=" << (ray_guard ? 1 : 0)
-     << " prediction_guard=" << (prediction_guard ? 1 : 0)
-     << " fallback_allows_fire=" << (fallback_allows_fire ? 1 : 0)
-     << " frames=" << tracker_frame_count_
-     << " p_cv=" << model_prob_cv
-     << " p_ctrv=" << model_prob_ctrv
-     << " dist=" << target_distance
+     << " target_id=" << target_id
+     << " armor_type=" << armor_type
+     << " raw_pnp_pos=" << vec_to_debug(raw_pnp_pos)
+     << " tracker_pos=" << vec_to_debug(tracker_pos)
+     << " selected_pos=" << vec_to_debug(selected_pos)
+     << " distance=" << target_distance
+     << " yaw_cmd=" << yaw_cmd
+     << " pitch_cmd=" << pitch_cmd
      << " yaw_err_deg=" << cmd_yaw_err_deg
      << " pitch_err_deg=" << cmd_pitch_err_deg
-     << " yaw_window_deg=" << yaw_window * 180.0 / M_PI
-     << " pitch_window_deg=" << pitch_window * 180.0 / M_PI;
+     << " manual_yaw_offset=" << manual_yaw_offset
+     << " manual_pitch_offset=" << manual_pitch_offset
+     << " fire_window=[" << yaw_window * 180.0 / M_PI
+     << "," << pitch_window * 180.0 / M_PI << "]"
+     << " tracker_state=" << tracker_state
+     << " fire_control=" << fire_control
+     << " state=" << track_state_name(track_state_)
+     << " source=" << aim_source
+     << " frames=" << tracker_frame_count_;
   if (!reason.empty()) {
     ss << " reason=" << reason;
   }
@@ -506,13 +622,25 @@ void AutoaimNode::on_gimbal_status(const GimbalStatus::ConstSharedPtr msg)
 void AutoaimNode::on_armors(const ArmorDetections::ConstSharedPtr msg)
 {
   rclcpp::Time t_img(msg->header.stamp);
+  const double current_time = t_img.seconds();
+
+  this->get_parameter("tracker_backend", tracker_backend_);
+  this->get_parameter("enable_raw_pnp_fallback", enable_raw_pnp_fallback_);
+  this->get_parameter("raw_pnp_fallback_on_tracker_lost", raw_pnp_fallback_on_tracker_lost_);
+
+  auto publish_cmd = [&](const GimbalCmd & cmd) {
+    gimbal_cmd_pub_->publish(cmd);
+    if (gimbal_cmd_raw_pub_ &&
+        std::string(gimbal_cmd_raw_pub_->get_topic_name()) !=
+        std::string(gimbal_cmd_pub_->get_topic_name()))
+    {
+      gimbal_cmd_raw_pub_->publish(cmd);
+    }
+  };
 
   auto publish_no_target_cmd = [&](const std::string & reason) {
     const double age_sec =
       has_last_detection_ ? (t_img - last_detection_time_).seconds() : -1.0;
-
-    auto model_probs = tracker_.isInitialized() ?
-      tracker_.getModelProbabilities() : std::array<double, 2>{0.0, 0.0};
 
     const bool within_temp_hold =
       age_sec >= 0.0 && age_sec < temp_lost_timeout_sec_;
@@ -526,6 +654,8 @@ void AutoaimNode::on_armors(const ArmorDetections::ConstSharedPtr msg)
 
     if (can_enter_temp_lost) {
       track_state_ = AutoaimTrackState::TEMP_LOST;
+      const AimTarget held_target =
+        csu_tracker_.markLost(current_time, aimer_.getParams().fire_delay);
 
       GimbalCmd cmd;
       if (hold_last_cmd_in_temp_lost_ && has_last_good_cmd_) {
@@ -543,23 +673,27 @@ void AutoaimNode::on_armors(const ArmorDetections::ConstSharedPtr msg)
       cmd.fire_control = 0;
       cmd.mode = 1;
       cmd.state_switch = 2;
-      gimbal_cmd_pub_->publish(cmd);
+      publish_cmd(cmd);
 
       publish_fire_debug(
+        tracker_backend_,
         "none",
-        false,
-        false,
-        false,
-        false,
-        false,
+        csu_tracker_.targetId(),
+        csu_tracker_.targetArmorType(),
+        Eigen::Vector3d::Zero(),
+        held_target.valid ? held_target.position_gimbal : Eigen::Vector3d::Zero(),
+        Eigen::Vector3d::Zero(),
         0,
-        model_probs[0],
-        model_probs[1],
+        0.0,
+        cmd.target_yaw,
+        cmd.target_pitch,
         0.0,
         0.0,
         0.0,
         0.0,
         0.0,
+        0.0,
+        tracker_state_name(csu_tracker_.state()),
         within_temp_hold ? "temp_lost" : (reason.empty() ? "lost_grace" : reason),
         age_sec);
       publish_target_status(
@@ -571,6 +705,7 @@ void AutoaimNode::on_armors(const ArmorDetections::ConstSharedPtr msg)
     track_state_ = AutoaimTrackState::LOST;
     tracker_frame_count_ = 0;
     tracker_ = ImmUkfTracker(ukf_params_);
+    csu_tracker_.reset();
 
     GimbalCmd cmd;
     cmd.target_yaw   = 0.0;
@@ -580,23 +715,27 @@ void AutoaimNode::on_armors(const ArmorDetections::ConstSharedPtr msg)
     cmd.state_switch = 1;   // Move — 回到巡逻/默认姿态
     cmd.fire_control = 0;
     cmd.mode         = 0;   // idle — 无目标
-    gimbal_cmd_pub_->publish(cmd);
+    publish_cmd(cmd);
 
     publish_fire_debug(
+      tracker_backend_,
       "none",
-      false,
-      false,
-      false,
-      false,
-      false,
+      -1,
+      "none",
+      Eigen::Vector3d::Zero(),
+      Eigen::Vector3d::Zero(),
+      Eigen::Vector3d::Zero(),
       0,
       0.0,
+      cmd.target_yaw,
+      cmd.target_pitch,
       0.0,
       0.0,
       0.0,
       0.0,
       0.0,
       0.0,
+      tracker_state_name(csu_tracker_.state()),
       reason.empty() ? "no_detection" : reason,
       age_sec);
     publish_target_status(
@@ -610,18 +749,20 @@ void AutoaimNode::on_armors(const ArmorDetections::ConstSharedPtr msg)
   }
 
   // ======== Step 1: 时间对齐 — 查找包围 T_img 的两个 IMU 样本 ========
+  cv::Quatd q_gimbal_to_world(1.0, 0.0, 0.0, 0.0);
   ImuStamp imu_before, imu_after;
-  if (!find_imu_bracket(t_img, imu_before, imu_after)) {
+  if (use_imu_world_transform_ && !find_imu_bracket(t_img, imu_before, imu_after)) {
     RCLCPP_WARN_THROTTLE(
       get_logger(), *get_clock(), 2000,
       "No IMU bracket for stamp %.3f. Dropping frame.", t_img.seconds());
     publish_fire_debug(
+      tracker_backend_,
       "none",
-      false,
-      false,
-      false,
-      false,
-      false,
+      -1,
+      "none",
+      Eigen::Vector3d::Zero(),
+      Eigen::Vector3d::Zero(),
+      Eigen::Vector3d::Zero(),
       0,
       0.0,
       0.0,
@@ -630,6 +771,9 @@ void AutoaimNode::on_armors(const ArmorDetections::ConstSharedPtr msg)
       0.0,
       0.0,
       0.0,
+      0.0,
+      0.0,
+      "LOST",
       "no_imu",
       has_last_detection_ ? (t_img - last_detection_time_).seconds() : -1.0);
     publish_target_status(false, false, false, false, 0.0, 0.0, 0.0, 0, "no_imu");
@@ -637,25 +781,16 @@ void AutoaimNode::on_armors(const ArmorDetections::ConstSharedPtr msg)
   }
 
   // ======== Step 2: SLERP 四元数插值 ========
-  double dt_total  = (imu_after.stamp - imu_before.stamp).seconds();
-  double dt_interp = (t_img - imu_before.stamp).seconds();
-  double alpha = (dt_total > 1e-9) ? (dt_interp / dt_total) : 0.0;
-  alpha = std::clamp(alpha, 0.0, 1.0);
-
-  cv::Quatd q_gimbal_to_world = slerp(imu_before.orientation, imu_after.orientation, alpha);
+  if (use_imu_world_transform_) {
+    double dt_total  = (imu_after.stamp - imu_before.stamp).seconds();
+    double dt_interp = (t_img - imu_before.stamp).seconds();
+    double alpha = (dt_total > 1e-9) ? (dt_interp / dt_total) : 0.0;
+    alpha = std::clamp(alpha, 0.0, 1.0);
+    q_gimbal_to_world = slerp(imu_before.orientation, imu_after.orientation, alpha);
+  }
 
   // ======== Step 3: PnP + 坐标变换 → 选最优装甲板 ========
-  struct ArmorResult
-  {
-    cv::Point3d p_world;
-    double confidence;
-    double distance;
-    double center_axis_error_px;
-    int class_id;
-    const ArmorDetection * armor_msg;
-    cv::Point2f center_px;
-  };
-  std::vector<ArmorResult> results;
+  std::vector<ArmorObservation> observations;
 
   const cv::Point2f optical_axis_px(
     static_cast<float>(camera_matrix_.at<double>(0, 2)),
@@ -670,7 +805,7 @@ void AutoaimNode::on_armors(const ArmorDetections::ConstSharedPtr msg)
       continue;
     }
 
-    cv::Point3d p_world = transform_to_world(tvec, q_gimbal_to_world);
+    cv::Point3d p = transform_to_world(tvec, q_gimbal_to_world);
 
     cv::Point2f center_px(0.0f, 0.0f);
     for (const auto & apex : armor.apexes) {
@@ -680,73 +815,83 @@ void AutoaimNode::on_armors(const ArmorDetections::ConstSharedPtr msg)
     center_px.x *= 0.25f;
     center_px.y *= 0.25f;
 
-    ArmorResult ar;
-    ar.p_world    = p_world;
-    ar.confidence = armor.confidence;
-    ar.distance   = std::sqrt(
-      p_world.x * p_world.x + p_world.y * p_world.y + p_world.z * p_world.z);
-    ar.center_axis_error_px = cv::norm(center_px - optical_axis_px);
-    ar.class_id = armor.class_id;
-    ar.armor_msg = &armor;
-    ar.center_px = center_px;
-    results.push_back(ar);
+    ArmorObservation obs;
+    obs.position_gimbal = Eigen::Vector3d(p.x, p.y, p.z);
+    obs.distance = obs.position_gimbal.norm();
+    obs.confidence = armor.confidence;
+    obs.class_id = armor.class_id;
+    obs.label = armor.label;
+    obs.armor_type = armor_type_from_detection(armor);
+    obs.center_axis_error_px = cv::norm(center_px - optical_axis_px);
+    observations.push_back(obs);
   }
 
-  if (results.empty()) {
+  if (observations.empty()) {
     publish_no_target_cmd("pnp_failed");
     return;
   }
 
-  // 选最接近相机光轴的装甲板。
-  // 旧仓库优先靠近图像中心；这里改为靠近相机主点(optical axis)更符合几何语义，
-  // 可避免误检因 PnP 假近距而抢占目标。
-  auto best_it = std::min_element(results.begin(), results.end(),
-    [](const ArmorResult & a, const ArmorResult & b) {
-      if (std::abs(a.center_axis_error_px - b.center_axis_error_px) > 1e-3) {
-        return a.center_axis_error_px < b.center_axis_error_px;
-      }
-      if (std::abs(a.confidence - b.confidence) > 1e-6) {
-        return a.confidence > b.confidence;
-      }
-      return a.distance < b.distance;
-    });
-
-  const auto & best = *best_it;
+  const auto selected_opt = csu_tracker_.select(observations);
+  if (!selected_opt) {
+    publish_no_target_cmd("select_failed");
+    return;
+  }
+  const auto best = *selected_opt;
 
   // 发布调试点云
-  for (const auto & res : results) {
+  for (const auto & res : observations) {
     geometry_msgs::msg::PointStamped pt;
     pt.header.stamp    = msg->header.stamp;
     pt.header.frame_id = world_frame_id_;
-    pt.point.x = res.p_world.x;
-    pt.point.y = res.p_world.y;
-    pt.point.z = res.p_world.z;
+    pt.point.x = res.position_gimbal.x();
+    pt.point.y = res.position_gimbal.y();
+    pt.point.z = res.position_gimbal.z();
     world_points_pub_->publish(pt);
   }
 
-  // ======== Step 4: Tracker 观测更新 ========
-  double current_time = t_img.seconds();
-  Eigen::Vector3d obs(best.p_world.x, best.p_world.y, best.p_world.z);
+  AimTarget raw_target;
+  raw_target.position_gimbal = best.position_gimbal;
+  raw_target.velocity_gimbal = Eigen::Vector3d::Zero();
+  raw_target.distance = best.distance;
+  raw_target.confidence = best.confidence;
+  raw_target.source = "raw_pnp";
+  raw_target.valid = raw_target.position_gimbal.allFinite() && raw_target.distance > 0.05;
 
-  if (!tracker_.isInitialized()) {
-    tracker_.init(obs, current_time);
+  // ======== Step 4: Tracker backend ========
+  AimTarget tracker_target;
+  if (tracker_backend_ == "legacy_imm") {
+    Eigen::Vector3d obs = best.position_gimbal;
+    if (!tracker_.isInitialized()) {
+      tracker_.init(obs, current_time);
+      tracker_frame_count_ = 1;
+    } else {
+      tracker_.update(obs, current_time);
+      tracker_frame_count_++;
+    }
+    auto predicted_state = tracker_.predict(current_time + aimer_.getParams().fire_delay);
+    tracker_target.position_gimbal = predicted_state.head<3>();
+    tracker_target.velocity_gimbal = predicted_state.segment<3>(3);
+    tracker_target.distance = tracker_target.position_gimbal.norm();
+    tracker_target.confidence = best.confidence;
+    tracker_target.source = "legacy_imm";
+    tracker_target.valid = tracker_target.position_gimbal.allFinite() && tracker_target.distance > 0.05;
+    track_state_ = AutoaimTrackState::TRACKING;
+  } else if (tracker_backend_ == "raw_pnp") {
+    tracker_target = raw_target;
     tracker_frame_count_ = 1;
+    track_state_ = AutoaimTrackState::TRACKING;
   } else {
-    tracker_.update(obs, current_time);
-    tracker_frame_count_++;
+    tracker_backend_ = "csu_tracker";
+    tracker_target = csu_tracker_.update(best, current_time, aimer_.getParams().fire_delay);
+    tracker_frame_count_ = csu_tracker_.trackingFrames();
+    track_state_ =
+      csu_tracker_.state() == CsuTrackerState::TEMP_LOST ? AutoaimTrackState::TEMP_LOST :
+      csu_tracker_.state() == CsuTrackerState::LOST ? AutoaimTrackState::LOST :
+      AutoaimTrackState::TRACKING;
   }
 
-  track_state_ = AutoaimTrackState::TRACKING;
   last_detection_time_ = t_img;
   has_last_detection_ = true;
-
-  // ======== Step 5: Tracker 前馈预测 ========
-  // 预测 fire_delay 秒后的状态 (系统延迟补偿)
-  double future_time = current_time + aimer_.getParams().fire_delay;
-  auto predicted_state = tracker_.predict(future_time);
-
-  // ======== Step 6: Aimer 解算 + 火控判定 ========
-  auto model_probs = tracker_.getModelProbabilities();
 
   double cur_yaw, cur_pitch, cur_bullet;
   {
@@ -756,95 +901,53 @@ void AutoaimNode::on_armors(const ArmorDetections::ConstSharedPtr msg)
     cur_bullet = current_bullet_speed_;
   }
 
-  auto predicted_aim = aimer_.solve(
-    predicted_state,
+  AimTarget selected_target = tracker_target;
+  const bool tracker_bad =
+    !tracker_target.valid ||
+    !tracker_target.position_gimbal.allFinite() ||
+    tracker_target.distance > 20.0 ||
+    (tracker_backend_ == "csu_tracker" &&
+     (csu_tracker_.state() == CsuTrackerState::LOST ||
+      (raw_pnp_fallback_on_tracker_lost_ && csu_tracker_.state() == CsuTrackerState::TEMP_LOST) ||
+      (tracker_target.position_gimbal - raw_target.position_gimbal).norm() > fallback_jump_guard_m_));
+
+  std::string reason;
+  if ((tracker_backend_ == "raw_pnp") ||
+      (enable_raw_pnp_fallback_ && tracker_bad && raw_target.valid))
+  {
+    selected_target = raw_target;
+    selected_target.source =
+      tracker_backend_ == "raw_pnp" ? "raw_pnp" : "raw_pnp_fallback";
+    if (tracker_backend_ != "raw_pnp") {
+      reason = "tracker_bad_raw_pnp_fallback";
+    }
+  }
+
+  const double manual_pitch_offset = manual_compensator_.pitchOffset(selected_target.distance);
+  const double manual_yaw_offset = manual_compensator_.yawOffset(selected_target.distance);
+
+  auto aim = aimer_.solve(
+    selected_target,
     cur_yaw,
     cur_pitch,
     tracker_frame_count_,
     cur_bullet,
-    !use_imu_world_transform_);
+    !use_imu_world_transform_,
+    manual_yaw_offset,
+    manual_pitch_offset);
 
-  Aimer::StateVec direct_state = Aimer::StateVec::Zero();
-  direct_state(0) = obs.x();
-  direct_state(1) = obs.y();
-  direct_state(2) = obs.z();
-  auto direct_aim = aimer_.solve(
-    direct_state,
-    cur_yaw,
-    cur_pitch,
-    tracker_frame_count_,
-    cur_bullet,
-    !use_imu_world_transform_);
-
-  cv::Point2f center_px = best.center_px;
-
-  std::vector<cv::Point2f> pixel_points = {center_px};
-  std::vector<cv::Point2f> undistorted_points;
-  cv::undistortPoints(pixel_points, undistorted_points, camera_matrix_, dist_coeffs_);
-  cv::Vec3d ray_cam(
-    static_cast<double>(undistorted_points.front().x),
-    static_cast<double>(undistorted_points.front().y),
-    1.0);
-  cv::Vec3d ray_gimbal = R_cam_to_gimbal_ * ray_cam;
-  double ray_norm = std::sqrt(
-    ray_gimbal(0) * ray_gimbal(0) +
-    ray_gimbal(1) * ray_gimbal(1) +
-    ray_gimbal(2) * ray_gimbal(2));
-  if (ray_norm > 1e-9) {
-    ray_gimbal *= (best.distance / ray_norm);
-  }
-
-  Aimer::StateVec ray_state = Aimer::StateVec::Zero();
-  if (use_imu_world_transform_) {
-    cv::Quatd ray_quat(0.0, ray_gimbal(0), ray_gimbal(1), ray_gimbal(2));
-    cv::Quatd ray_world_quat = q_gimbal_to_world * ray_quat * q_gimbal_to_world.inv();
-    ray_state(0) = ray_world_quat.x;
-    ray_state(1) = ray_world_quat.y;
-    ray_state(2) = ray_world_quat.z;
-  } else {
-    ray_state(0) = ray_gimbal(0);
-    ray_state(1) = ray_gimbal(1);
-    ray_state(2) = ray_gimbal(2);
-  }
-  auto ray_aim = aimer_.solve(
-    ray_state,
-    cur_yaw,
-    cur_pitch,
-    tracker_frame_count_,
-    cur_bullet,
-    !use_imu_world_transform_);
-
-  double ray_pnp_gap_yaw_deg = std::abs(std::atan2(
-    std::sin(direct_aim.target_yaw - ray_aim.target_yaw),
-    std::cos(direct_aim.target_yaw - ray_aim.target_yaw))) * 180.0 / M_PI;
-  double ray_pnp_gap_pitch_deg =
-    std::abs(direct_aim.target_pitch - ray_aim.target_pitch) * 180.0 / M_PI;
-  bool use_ray_fallback =
-    enable_ray_consistency_guard_ &&
-    (ray_pnp_gap_yaw_deg > ray_consistency_guard_deg_ ||
-     ray_pnp_gap_pitch_deg > ray_consistency_guard_deg_);
-
-  const auto & base_aim = use_ray_fallback ? ray_aim : direct_aim;
-
-  double aim_gap_yaw_deg = std::abs(std::atan2(
-    std::sin(predicted_aim.target_yaw - base_aim.target_yaw),
-    std::cos(predicted_aim.target_yaw - base_aim.target_yaw))) * 180.0 / M_PI;
-  double aim_gap_pitch_deg =
-    std::abs(predicted_aim.target_pitch - base_aim.target_pitch) * 180.0 / M_PI;
-  bool use_direct_fallback =
-    enable_prediction_consistency_guard_ &&
-    (aim_gap_yaw_deg > prediction_consistency_guard_deg_ ||
-     aim_gap_pitch_deg > prediction_consistency_guard_deg_);
-
-  const auto & aim = use_direct_fallback ? base_aim : predicted_aim;
-
-  bool fallback_allows_fire = true;
-  if (use_direct_fallback && !allow_fire_on_prediction_fallback_) {
-    fallback_allows_fire = false;
-  }
-  if (use_ray_fallback && !allow_fire_on_ray_fallback_) {
-    fallback_allows_fire = false;
-  }
+  const bool allow_fire_on_raw =
+    this->get_parameter("tracker.allow_fire_on_raw_pnp_fallback").as_bool();
+  const bool allow_fire_on_csu =
+    this->get_parameter("tracker.allow_fire_on_csu_tracker").as_bool();
+  const bool backend_allows_fire =
+    (selected_target.source == "csu_tracker" && allow_fire_on_csu) ||
+    ((selected_target.source == "raw_pnp" || selected_target.source == "raw_pnp_fallback") &&
+     allow_fire_on_raw);
+  const bool tracker_tracking =
+    tracker_backend_ == "raw_pnp" ? true :
+    tracker_backend_ == "legacy_imm" ? tracker_.isInitialized() :
+    csu_tracker_.state() == CsuTrackerState::TRACKING;
 
   // ======== Step 7: 构建 GimbalCmd ========
   // 有目标 → mode=1 (auto_aim)
@@ -854,52 +957,17 @@ void AutoaimNode::on_armors(const ArmorDetections::ConstSharedPtr msg)
   cmd.target_pitch = aim.target_pitch;
   cmd.yaw_vel      = aim.yaw_vel;
   cmd.pitch_vel    = aim.pitch_vel;
-  cmd.fire_control = (fallback_allows_fire && aim.can_fire) ? 1 : 0;
+  cmd.fire_control =
+    (selected_target.valid &&
+     tracker_tracking &&
+     backend_allows_fire &&
+     aim.can_fire) ? 1 : 0;
   cmd.state_switch = 2;  // Attack — 有目标即 Attack (下位机小陀螺+跟踪)
   cmd.mode         = 1;  // auto_aim — 有目标
 
-  gimbal_cmd_pub_->publish(cmd);
+  publish_cmd(cmd);
   last_good_cmd_ = cmd;
   has_last_good_cmd_ = true;
-
-  if (use_ray_fallback != last_ray_guard_active_) {
-    if (use_ray_fallback) {
-      RCLCPP_WARN(get_logger(),
-        "Ray guard: pnp=(%.2f°, %.2f°) ray=(%.2f°, %.2f°) gap=(%.2f°, %.2f°) "
-        "px=(%.1f, %.1f) fallback_allows_fire=%d fire=%d",
-        direct_aim.target_yaw * 180.0 / M_PI,
-        direct_aim.target_pitch * 180.0 / M_PI,
-        ray_aim.target_yaw * 180.0 / M_PI,
-        ray_aim.target_pitch * 180.0 / M_PI,
-        ray_pnp_gap_yaw_deg,
-        ray_pnp_gap_pitch_deg,
-        center_px.x, center_px.y,
-        fallback_allows_fire ? 1 : 0,
-        cmd.fire_control);
-    } else {
-      RCLCPP_INFO(get_logger(), "Ray guard cleared");
-    }
-    last_ray_guard_active_ = use_ray_fallback;
-  }
-
-  if (use_direct_fallback != last_prediction_guard_active_) {
-    if (use_direct_fallback) {
-      RCLCPP_WARN(get_logger(),
-        "Prediction guard: tracker=(%.2f°, %.2f°) base=(%.2f°, %.2f°) "
-        "gap=(%.2f°, %.2f°) fallback_allows_fire=%d fire=%d",
-        predicted_aim.target_yaw * 180.0 / M_PI,
-        predicted_aim.target_pitch * 180.0 / M_PI,
-        base_aim.target_yaw * 180.0 / M_PI,
-        base_aim.target_pitch * 180.0 / M_PI,
-        aim_gap_yaw_deg,
-        aim_gap_pitch_deg,
-        fallback_allows_fire ? 1 : 0,
-        cmd.fire_control);
-    } else {
-      RCLCPP_INFO(get_logger(), "Prediction guard cleared");
-    }
-    last_prediction_guard_active_ = use_direct_fallback;
-  }
 
   double cur_yaw_rad = cur_yaw * M_PI / 180.0;
   double cur_pitch_rad = cur_pitch * M_PI / 180.0;
@@ -908,55 +976,73 @@ void AutoaimNode::on_armors(const ArmorDetections::ConstSharedPtr msg)
     std::cos(aim.target_yaw - cur_yaw_rad)) * 180.0 / M_PI;
   double cmd_pitch_err_deg = (aim.target_pitch - cur_pitch_rad) * 180.0 / M_PI;
 
-  const char * source =
-    use_direct_fallback ? (use_ray_fallback ? "ray" : "pnp") :
-    (use_ray_fallback ? "ray" : "tracker");
+  if (reason.empty()) {
+    if (!selected_target.valid) {
+      reason = "invalid_target";
+    } else if (!tracker_tracking) {
+      reason = "tracker_not_tracking";
+    } else if (!backend_allows_fire) {
+      reason = "backend_fire_disabled";
+    } else if (!aim.alignment_ready) {
+      reason = "not_aligned";
+    } else if (!aim.tracker_ready) {
+      reason = "tracker_frames_or_distance";
+    } else {
+      reason = "ok";
+    }
+  }
 
   publish_fire_debug(
-    source,
-    aim.alignment_ready,
-    aim.tracker_ready,
-    use_ray_fallback,
-    use_direct_fallback,
-    fallback_allows_fire,
+    tracker_backend_,
+    selected_target.source,
+    best.class_id,
+    best.armor_type,
+    raw_target.position_gimbal,
+    tracker_target.valid ? tracker_target.position_gimbal : Eigen::Vector3d::Zero(),
+    selected_target.valid ? selected_target.position_gimbal : Eigen::Vector3d::Zero(),
     cmd.fire_control,
-    model_probs[0],
-    model_probs[1],
     aim.target_distance,
+    aim.target_yaw,
+    aim.target_pitch,
     cmd_yaw_err_deg,
     cmd_pitch_err_deg,
+    manual_yaw_offset,
+    manual_pitch_offset,
     aim.yaw_window,
     aim.pitch_window,
-    "",
+    tracker_backend_ == "legacy_imm" ? "LEGACY_IMM" : tracker_state_name(csu_tracker_.state()),
+    reason,
     0.0);
   const std::uint8_t aim_source_id =
-    use_ray_fallback ? 3 : (use_direct_fallback ? 2 : 1);
+    (selected_target.source == "raw_pnp" || selected_target.source == "raw_pnp_fallback") ? 2 : 1;
   publish_target_status(
     true,
-    true,
-    false,
+    tracker_tracking,
+    csu_tracker_.state() == CsuTrackerState::TEMP_LOST,
     cmd.fire_control == 1,
     aim.target_distance,
     cmd_yaw_err_deg,
     cmd_pitch_err_deg,
     aim_source_id,
-    source);
+    selected_target.source + ":" + reason);
 
   RCLCPP_INFO_THROTTLE(get_logger(), *get_clock(), 2000,
-    "Aim: src=%s cmd=(%.2f°, %.2f°) err=(%.2f°, %.2f°) fire=%d ready=[align:%s tracker:%s] "
-    "fallback_fire=%d frames=%d win=(%.2f°, %.2f°)",
-    source,
+    "Aim: backend=%s src=%s cmd=(%.2f°, %.2f°) err=(%.2f°, %.2f°) fire=%d "
+    "state=%s frames=%d manual=(%.3f, %.3f) win=(%.2f°, %.2f°) reason=%s",
+    tracker_backend_.c_str(),
+    selected_target.source.c_str(),
     aim.target_yaw * 180.0 / M_PI,
     aim.target_pitch * 180.0 / M_PI,
     cmd_yaw_err_deg,
     cmd_pitch_err_deg,
     cmd.fire_control,
-    aim.alignment_ready ? "1" : "0",
-    aim.tracker_ready ? "1" : "0",
-    fallback_allows_fire ? 1 : 0,
+    tracker_backend_ == "legacy_imm" ? "LEGACY_IMM" : tracker_state_name(csu_tracker_.state()),
     tracker_frame_count_,
+    manual_yaw_offset,
+    manual_pitch_offset,
     aim.yaw_window * 180.0 / M_PI,
-    aim.pitch_window * 180.0 / M_PI);
+    aim.pitch_window * 180.0 / M_PI,
+    reason.c_str());
 }
 
 // =============================================================================
@@ -1034,10 +1120,7 @@ bool AutoaimNode::solve_pnp(
   const ArmorDetection & armor,
   cv::Vec3d & rvec, cv::Vec3d & tvec)
 {
-  static const std::unordered_set<int> kBigArmorClassIds = {
-    21, 22, 23, 24, 29, 30, 31, 32, 33, 34, 35, 36, 37,
-  };
-  bool is_large = kBigArmorClassIds.count(armor.class_id) > 0;
+  bool is_large = armor_type_from_detection(armor) == "large";
 
   double half_w = (is_large ? armor_large_width_ : armor_small_width_) / 2.0;
   double half_h = (is_large ? armor_large_height_ : armor_small_height_) / 2.0;
@@ -1064,8 +1147,31 @@ bool AutoaimNode::solve_pnp(
 
   if (!ok || rvecs.empty()) return false;
 
-  rvec = rvecs[0];
-  tvec = tvecs[0];
+  auto reprojection_error = [&](const cv::Vec3d & candidate_rvec, const cv::Vec3d & candidate_tvec) {
+    std::vector<cv::Point2d> projected;
+    cv::projectPoints(
+      object_points, candidate_rvec, candidate_tvec,
+      camera_matrix_, dist_coeffs_, projected);
+    double err = 0.0;
+    for (std::size_t i = 0; i < projected.size(); ++i) {
+      err += cv::norm(projected[i] - image_points[i]);
+    }
+    return err / std::max<std::size_t>(1, projected.size());
+  };
+
+  int best_idx = 0;
+  double best_err = std::numeric_limits<double>::max();
+  for (std::size_t i = 0; i < tvecs.size(); ++i) {
+    if (!std::isfinite(tvecs[i][2]) || tvecs[i][2] <= 0.0) continue;
+    const double err = reprojection_error(rvecs[i], tvecs[i]);
+    if (err < best_err) {
+      best_err = err;
+      best_idx = static_cast<int>(i);
+    }
+  }
+
+  rvec = rvecs[best_idx];
+  tvec = tvecs[best_idx];
 
   // 阶段 2 (可选): ITERATIVE 精炼
   if (pnp_refine_) {

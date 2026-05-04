@@ -35,7 +35,7 @@ rm_vision_detector:
     #   "red"  = 只打红色装甲板
     #   "blue" = 只打蓝色装甲板
     #   "all"  = 红蓝都打（测试用）
-    target_color: "red"
+    target_color: "blue"
 
     # color_ignore: fallback 黑名单 — 不打什么颜色（我方颜色）
     #   0 = 忽略红色（我方红）

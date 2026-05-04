@@ -79,12 +79,37 @@ rm_autoaim:
     lost_timeout_sec: 0.80
     hold_last_cmd_in_temp_lost: true
 
+    # ---- V3 tracker backend ----
+    # raw_pnp / csu_tracker / legacy_imm
+    tracker_backend: "csu_tracker"
+    enable_raw_pnp_fallback: true
+    raw_pnp_fallback_on_tracker_lost: true
+    fallback_jump_guard_m: 1.0
+
     # ---- Fallback fire policy ----
     allow_fire_on_prediction_fallback: true
     allow_fire_on_ray_fallback: false
 
+    # ---- ManualCompensator: distance(m) -> angle offset(rad) LUT ----
+    # ROS 2 Humble parameters are flat arrays, stored as [distance, offset, ...].
+    manual_compensator:
+      enabled: true
+      pitch_lut: [2.0, -0.222, 3.0, -0.222, 4.0, -0.222, 5.0, -0.222]
+      yaw_lut: [2.0, -0.002, 5.0, -0.002]
+      clamp_min_distance: 0.5
+      clamp_max_distance: 8.0
+
+    tracker:
+      min_detect_count: 2
+      min_tracking_count_for_fire: 3
+      max_match_distance: 0.5
+      max_lost_time: 0.3
+      fire_max_distance: 8.0
+      allow_fire_on_raw_pnp_fallback: false
+      allow_fire_on_csu_tracker: true
+
     # =====================================================================
-    # IMM-UKF Tracker 参数
+    # legacy IMM-UKF params, deprecated in V3 production path
     # tune_ukf.py Top1 (2026-04-10): J=0.5058
     # =====================================================================
     ukf:
@@ -106,12 +131,12 @@ rm_autoaim:
     # =====================================================================
 
     # ---- 物理常量 ----
-    gravity: 0.0                # 重力加速度 (m/s²)
+    gravity: 9.81                # 重力加速度 (m/s²)
     bullet_speed_default: 24.0       # 默认弹丸速度 (m/s)
-    fire_delay: 0.10                 # 系统总延迟 (s), 含图像+串口+云台
+    fire_delay: 0.05                 # 系统总延迟 (s), 含图像+串口+云台
     # yaw 常量偏置 (rad): 正=命令更向左, 负=命令更向右
     # 若静态打点“落在目标左边”, 就填负值; 若“落在目标右边”, 就填正值
-    yaw_offset: -0.002
+    yaw_offset: 0.0
 
     # ---- 坐标系契约 ----
     # 若下位机 pitch 正方向与数学解算相反，则在发布最终命令前取反
@@ -139,6 +164,6 @@ rm_autoaim:
     # ---- 弹道补偿 LUT 系数 (预留) ----
     # pitch_offset = k0 + k1*d + k2*d² + 解析模型
     # 默认全 0, 后续可手动标定
-    pitch_offset_k0: -0.222
+    pitch_offset_k0: -0.082
     pitch_offset_k1: 0.0
     pitch_offset_k2: 0.0

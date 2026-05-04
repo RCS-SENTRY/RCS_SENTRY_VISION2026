@@ -33,6 +33,8 @@ target_link_libraries(imm_ukf_tracker
 # ---- 自瞄节点 ----
 add_executable(autoaim_node
   src/autoaim_node.cpp
+  src/core/csu_armor_tracker.cpp
+  src/core/manual_compensator.cpp
 )
 
 target_include_directories(autoaim_node PUBLIC

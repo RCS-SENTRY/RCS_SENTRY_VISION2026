@@ -1,5 +1,9 @@
 // =============================================================================
-// imm_ukf_tracker.hpp — IMM-UKF 装甲板追踪器 (纯数学层，零 ROS 依赖)
+// imm_ukf_tracker.hpp — LEGACY IMM-UKF 装甲板追踪器 (纯数学层，零 ROS 依赖)
+//
+// Deprecated in V3 production path. This tracker estimates a target center-like
+// state and must not be fed directly to Aimer as a shoot point. Keep it only for
+// tracker_backend:=legacy_imm experiments.
 // =============================================================================
 // 算法: 交互式多模型 (IMM) × 无迹卡尔曼滤波 (UKF)
 // 模型: CV (Constant Velocity) + CTRV (Constant Turn Rate and Velocity)

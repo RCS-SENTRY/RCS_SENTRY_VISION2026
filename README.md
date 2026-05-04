@@ -649,7 +649,11 @@ ros2 launch rm_bringup sentry_bringup.launch.py \
 
 ### 仅自瞄栈
 
-只启动通信 + 相机 + 识别 + 自瞄，不启动导航：
+只启动通信 + 相机 + 识别 + 自瞄，不启动导航。V3 自瞄默认使用
+`tracker_backend=csu_tracker`，参数来自
+`src/rm_autoaim/config/params.yaml`。该模式默认不开 `command_mux`，
+`rm_autoaim` 会直接发布 `/gimbal_cmd`，同时也发布
+`/autoaim/gimbal_cmd_raw` 供调试观察。
 
 ```bash
 ros2 launch rm_bringup sentry_bringup.launch.py \
@@ -661,7 +665,7 @@ ros2 launch rm_bringup sentry_bringup.launch.py \
   debug_no_serial:=false
 ```
 
-无串口自瞄调试：
+无串口自瞄调试，适合只接相机/检测链路做 raw PnP 和 tracker 验收：
 
 ```bash
 ros2 launch rm_bringup sentry_bringup.launch.py \
@@ -672,9 +676,40 @@ ros2 launch rm_bringup sentry_bringup.launch.py \
   publish_debug_image:=true
 ```
 
+启动后确认节点和默认后端：
+
+```bash
+ros2 param get /rm_autoaim tracker_backend
+ros2 topic hz /detector/armors
+ros2 topic echo /autoaim/debug_fire_gate
+ros2 topic echo /autoaim/target_status
+ros2 topic echo /autoaim/gimbal_cmd_raw
+ros2 topic echo /gimbal_cmd
+```
+
+V3 几何验收时可以临时切到 raw PnP 后端：
+
+```bash
+ros2 param set /rm_autoaim tracker_backend raw_pnp
+ros2 topic echo /autoaim/debug_fire_gate
+ros2 topic echo /autoaim/target_status
+ros2 topic echo /autoaim/gimbal_cmd_raw
+```
+
+回到默认 tracker：
+
+```bash
+ros2 param set /rm_autoaim tracker_backend csu_tracker
+```
+
 ### 导航 + 自瞄同时开
 
-完整整车：通信、PB2025 导航、相机、识别、自瞄同时启动。上位机语义保持为：无目标 `mode=0,state_switch=1,fire_control=0`；有目标但不能开火 `mode=1,state_switch=2,fire_control=0`；允许开火才发布 `fire_control=1`。
+完整整车：通信、PB2025 导航、相机、识别、自瞄同时启动。下面这条是
+“不启用 command_mux”的直连模式：`rm_autoaim` 直接发布最终
+`/gimbal_cmd`。上位机语义保持为：无目标
+`mode=0,state_switch=1,fire_control=0`；有目标但不能开火
+`mode=1,state_switch=2,fire_control=0`；允许开火才发布
+`fire_control=1`。
 
 ```bash
 ros2 launch rm_bringup sentry_bringup.launch.py \
@@ -690,6 +725,38 @@ ros2 launch rm_bringup sentry_bringup.launch.py \
   enable_small_gicp:=false \
   enable_second_lidar_safety:=false \
   use_rviz:=false
+```
+
+需要让决策/command_mux 接管最终 `/gimbal_cmd` 时，打开
+`enable_sentry_command_mux`。此时 launch 会把 `rm_autoaim` 的
+`/gimbal_cmd` remap 到 `/autoaim/gimbal_cmd_raw`，最终 `/gimbal_cmd`
+由 `sentry_command_mux` 发布：
+
+```bash
+ros2 launch rm_bringup sentry_bringup.launch.py \
+  use_serial:=true \
+  serial_device:=/dev/rm_serial \
+  baudrate:=460800 \
+  enable_navigation:=true \
+  enable_vision:=true \
+  enable_sentry_command_mux:=true \
+  enable_sentry_decision:=true \
+  navigation_only:=false \
+  vision_only:=false \
+  slam:=False \
+  map:=/home/rm/Desktop/SENTRY_FULL/maps/self_filtered_map.yaml \
+  enable_small_gicp:=false \
+  enable_second_lidar_safety:=false \
+  use_rviz:=false
+```
+
+command_mux 模式下重点看：
+
+```bash
+ros2 topic echo /autoaim/gimbal_cmd_raw
+ros2 topic echo /sentry/intent
+ros2 topic echo /sentry/command_mux_debug
+ros2 topic echo /gimbal_cmd
 ```
 
 完整整车 + 第二雷达 safety：
@@ -859,8 +926,12 @@ RViz 中显示点云时，选择 `sensor_msgs/msg/PointCloud2` topic，例如：
 | `vision_only` | `false` | 通信 + 相机/视觉/自瞄，不启动导航 |
 | `debug_no_serial` | `false` | 跳过串口，其他按模式启动 |
 | `enable_navigation` | `true` | 启动 PB2025 导航 |
+| `enable_vision` | `true` | 启动相机、识别、自瞄链路 |
+| `enable_sentry_command_mux` | `false` | 启动后由 command_mux 发布最终 `/gimbal_cmd`，自瞄输出 remap 到 `/autoaim/gimbal_cmd_raw` |
+| `enable_sentry_decision` | `false` | 启动 `sentry_bt` 意图层，通常和 command_mux 一起联调 |
 | `enable_small_gicp` | `false` | 默认关闭 PB small_gicp 重定位 |
 | `enable_second_lidar_safety` | `false` | 可选第二雷达速度安全壳，不改变主导航链 |
+| `target_color` | `red` | 检测器目标颜色，可启动时覆盖为 `blue` 或 `all` |
 | `use_rviz` | `false` | 默认机器人端不开 RViz |
 | `slam` | `False` | `False` 使用已有地图，`True` 进入 PB SLAM 模式 |
 | `map` | `/home/rm/Desktop/SENTRY_FULL/maps/self_filtered_map.yaml` | Nav2 栅格地图 |
@@ -917,15 +988,24 @@ ros2 topic echo /global_costmap/costmap --once
 ros2 topic hz /detector/armors
 ros2 topic hz /imu/data
 ros2 topic echo /gimbal_status
+ros2 param get /rm_autoaim tracker_backend
+ros2 topic echo /autoaim/gimbal_cmd_raw
 ros2 topic echo /gimbal_cmd
 ros2 topic echo /autoaim/debug_fire_gate
 ros2 topic echo /autoaim/debug_world_points
 ```
 
+`/autoaim/debug_fire_gate` 里 V3 重点看：
+`backend`、`source`、`raw_pnp_pos`、`tracker_pos`、`selected_pos`、
+`manual_yaw_offset`、`manual_pitch_offset`、`tracker_state`、`fire_control`、
+`reason`。默认应看到 `backend=csu_tracker`；切 raw PnP 验几何时应看到
+`source=raw_pnp`。
+
 完整整车联调时重点看：
 
 ```bash
 ros2 topic echo /nav_cmd
+ros2 topic echo /autoaim/gimbal_cmd_raw
 ros2 topic echo /gimbal_cmd
 ros2 topic echo /autoaim/debug_fire_gate
 ros2 run tf2_ros tf2_echo map base_footprint

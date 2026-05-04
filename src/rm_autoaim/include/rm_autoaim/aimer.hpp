@@ -1,11 +1,12 @@
 // =============================================================================
 // aimer.hpp — 物理前馈逆运动学 + 简洁火控判定
 // =============================================================================
-// 职责: 接收 Tracker 预测状态 → 解算瞄准角度 → 判定开火窗口
+// 职责: 接收 AimTarget 装甲板击打点 → 解算瞄准角度 → 判定开火窗口
 // 设计: 纯数学类，零 ROS 依赖，可离线单元测试
 //
-// 状态向量约定 (与 ImmUkfTracker 一致):
-//   x = [xc, yc, zc, vx, vy, vz, r, phi, omega]^T
+// V3 生产链约定:
+//   Aimer 只接收 AimTarget。AimTarget::position_gimbal 必须是最终要打的
+//   装甲板点，不能再把车体中心状态直接交给 Aimer。
 //
 // 角度契约:
 //   - inverseKinematics() 输出的是 hit_pos 所在参考系下的视线角
@@ -27,6 +28,8 @@
 #include <utility>
 
 #include <Eigen/Dense>
+
+#include "rm_autoaim/core/aim_target.hpp"
 
 namespace rm_autoaim
 {
@@ -94,8 +97,22 @@ public:
     double target_distance;  // 预测状态 3D 距离 (m)
     double yaw_window;       // yaw 实际射击窗口 (rad)
     double pitch_window;     // pitch 实际射击窗口 (rad)
+    double manual_yaw_offset = 0.0;
+    double manual_pitch_offset = 0.0;
   };
 
+  AimResult solve(
+    const AimTarget & target,
+    double current_yaw_deg,
+    double current_pitch_deg,
+    int tracker_frames,
+    double bullet_speed = 0.0,
+    bool input_in_current_gimbal_frame = true,
+    double manual_yaw_offset = 0.0,
+    double manual_pitch_offset = 0.0) const;
+
+  // Legacy experimental IMM entrypoint. Deprecated in V3 production path because
+  // state(0..2) may describe target center instead of shootable armor point.
   /// 完整解算
   /// @param predicted_state   Tracker 预测的 9D 状态
   /// @param current_yaw_deg   下位机反馈的当前真实 yaw (deg)
@@ -167,6 +184,91 @@ private:
 // =============================================================================
 // ================================ 实现 =======================================
 // =============================================================================
+
+inline Aimer::AimResult Aimer::solve(
+  const AimTarget & target,
+  double current_yaw_deg,
+  double current_pitch_deg,
+  int tracker_frames,
+  double bullet_speed,
+  bool input_in_current_gimbal_frame,
+  double manual_yaw_offset,
+  double manual_pitch_offset) const
+{
+  AimResult result;
+
+  if (!target.valid || !target.position_gimbal.allFinite() || !target.velocity_gimbal.allFinite()) {
+    result.target_yaw = 0.0;
+    result.target_pitch = 0.0;
+    result.yaw_vel = 0.0;
+    result.pitch_vel = 0.0;
+    result.alignment_ready = false;
+    result.tracker_ready = false;
+    result.can_fire = false;
+    result.t_flight = 0.0;
+    result.target_distance = 0.0;
+    result.yaw_window = params_.fire_tolerance;
+    result.pitch_window = params_.fire_tolerance;
+    result.manual_yaw_offset = manual_yaw_offset;
+    result.manual_pitch_offset = manual_pitch_offset;
+    return result;
+  }
+
+  const double v_bullet = (bullet_speed > 2.0) ? bullet_speed : params_.bullet_speed;
+  const double current_yaw = current_yaw_deg * M_PI / 180.0;
+  const double current_pitch = current_pitch_deg * M_PI / 180.0;
+
+  Eigen::Vector3d hit_pos = target.position_gimbal;
+  double t_flight = hit_pos.norm() / v_bullet;
+  for (int i = 0; i < 3; ++i) {
+    hit_pos = target.position_gimbal + target.velocity_gimbal * (params_.fire_delay + t_flight);
+    t_flight = hit_pos.norm() / v_bullet;
+  }
+  result.t_flight = t_flight;
+
+  double frame_yaw = 0.0;
+  double frame_pitch = 0.0;
+  inverseKinematics(hit_pos, frame_yaw, frame_pitch);
+
+  const double command_yaw = frame_yaw + params_.yaw_offset + manual_yaw_offset;
+  const double compensated_pitch = frame_pitch + manual_pitch_offset;
+  const double command_pitch = params_.pitch_invert ? -compensated_pitch : compensated_pitch;
+
+  if (input_in_current_gimbal_frame) {
+    result.target_yaw = std::atan2(
+      std::sin(current_yaw + command_yaw),
+      std::cos(current_yaw + command_yaw));
+    result.target_pitch = current_pitch + command_pitch;
+  } else {
+    result.target_yaw = std::atan2(std::sin(command_yaw), std::cos(command_yaw));
+    result.target_pitch = command_pitch;
+  }
+
+  const double x = hit_pos(0);
+  const double y = hit_pos(1);
+  const double vx = target.velocity_gimbal(0);
+  const double vy = target.velocity_gimbal(1);
+  const double r_sq = x * x + y * y;
+  result.yaw_vel = (r_sq > 1e-4) ? ((x * vy - y * vx) / r_sq) : 0.0;
+  result.pitch_vel = 0.0;
+
+  result.target_distance = hit_pos.norm();
+  auto fire_windows = getFireWindows(result.target_distance);
+  result.yaw_window = fire_windows.first;
+  result.pitch_window = fire_windows.second;
+  result.manual_yaw_offset = manual_yaw_offset;
+  result.manual_pitch_offset = manual_pitch_offset;
+
+  result.alignment_ready = checkAlignmentReady(
+    result.target_yaw, result.target_pitch, current_yaw_deg, current_pitch_deg,
+    result.target_distance);
+  result.tracker_ready =
+    tracker_frames >= params_.fire_min_frames &&
+    result.target_distance <= params_.fire_max_distance;
+  result.can_fire = result.alignment_ready && result.tracker_ready;
+
+  return result;
+}
 
 inline Aimer::AimResult Aimer::solve(
   const StateVec & predicted_state,

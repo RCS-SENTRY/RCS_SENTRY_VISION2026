@@ -5,8 +5,8 @@
 //   1. IMU SLERP 时间对齐
 //   2. PnP: 2D 像素 → 相机系 3D
 //   3. 坐标变换: 相机系 → 云台系 → 世界惯性系
-//   4. IMM-UKF Tracker: 观测更新 + 前馈预测
-//   5. Aimer: 物理前馈逆运动学 + 火控判定 + 重力补偿
+//   4. CSU-style armor-point Tracker: 观测更新 + 前馈预测
+//   5. Aimer: AimTarget 逆运动学 + 火控判定 + ManualCompensator
 //   6. 发布 GimbalCmd 控制指令
 // =============================================================================
 #ifndef RM_AUTOAIM__AUTOAIM_NODE_HPP_
@@ -33,6 +33,8 @@
 
 #include "rm_autoaim/imm_ukf_tracker.hpp"
 #include "rm_autoaim/aimer.hpp"
+#include "rm_autoaim/core/csu_armor_tracker.hpp"
+#include "rm_autoaim/core/manual_compensator.hpp"
 
 namespace rm_autoaim
 {
@@ -93,22 +95,27 @@ private:
     const cv::Quatd & q_gimbal_to_world);
 
   static const char * track_state_name(AutoaimTrackState state);
+  static std::string armor_type_from_detection(const rm_interfaces::msg::ArmorDetection & armor);
 
   void publish_fire_debug(
+    const std::string & backend,
     const std::string & aim_source,
-    bool alignment_ready,
-    bool tracker_ready,
-    bool ray_guard,
-    bool prediction_guard,
-    bool fallback_allows_fire,
+    int target_id,
+    const std::string & armor_type,
+    const Eigen::Vector3d & raw_pnp_pos,
+    const Eigen::Vector3d & tracker_pos,
+    const Eigen::Vector3d & selected_pos,
     int fire_control,
-    double model_prob_cv,
-    double model_prob_ctrv,
     double target_distance,
+    double yaw_cmd,
+    double pitch_cmd,
     double cmd_yaw_err_deg,
     double cmd_pitch_err_deg,
+    double manual_yaw_offset,
+    double manual_pitch_offset,
     double yaw_window,
     double pitch_window,
+    const std::string & tracker_state,
     const std::string & reason,
     double age_sec);
   void publish_target_status(
@@ -145,6 +152,10 @@ private:
   double ray_consistency_guard_deg_ = 10.0;
   bool allow_fire_on_prediction_fallback_ = true;
   bool allow_fire_on_ray_fallback_ = false;
+  std::string tracker_backend_ = "csu_tracker";
+  bool enable_raw_pnp_fallback_ = true;
+  bool raw_pnp_fallback_on_tracker_lost_ = true;
+  double fallback_jump_guard_m_ = 1.0;
 
   double temp_lost_timeout_sec_ = 0.30;
   double lost_timeout_sec_ = 0.80;
@@ -155,7 +166,12 @@ private:
   // Tracker + Aimer
   // ===========================================================================
   UKFParams ukf_params_;
+  // Legacy IMM-UKF is retained only for experiments. V3 production defaults to
+  // csu_tracker, which outputs a shootable armor point.
   ImmUkfTracker tracker_;
+  CsuArmorTracker csu_tracker_;
+  CsuArmorTrackerParams csu_tracker_params_;
+  ManualCompensator manual_compensator_;
   Aimer aimer_;
   int tracker_frame_count_ = 0;
   bool last_ray_guard_active_ = false;
@@ -188,6 +204,7 @@ private:
 
   rclcpp::Publisher<geometry_msgs::msg::PointStamped>::SharedPtr world_points_pub_;
   rclcpp::Publisher<rm_interfaces::msg::GimbalCmd>::SharedPtr gimbal_cmd_pub_;
+  rclcpp::Publisher<rm_interfaces::msg::GimbalCmd>::SharedPtr gimbal_cmd_raw_pub_;
   rclcpp::Publisher<std_msgs::msg::String>::SharedPtr fire_debug_pub_;
   rclcpp::Publisher<rm_interfaces::msg::AutoaimTargetStatus>::SharedPtr target_status_pub_;
 };
