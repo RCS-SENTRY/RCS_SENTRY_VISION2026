@@ -649,8 +649,9 @@ private:
     void ApplyAmmoTarget(std::uint16_t ammo_exchange_target_total)
     {
         const bool on_base_rfid = (status_.rfid_status & 0x1U) != 0U;
-        if (!(sim_input_.on_supply || sim_input_.on_outpost || sim_input_.on_fortress ||
-              on_base_rfid))
+        // Keep simulation aligned with production rule logic:
+        // fortress reserve allowance is not normal EXCHANGE_AMMO_AT_POINT.
+        if (!(sim_input_.on_supply || sim_input_.on_outpost || on_base_rfid))
         {
             return;
         }

@@ -71,12 +71,12 @@
     <BehaviorTree ID="RuleActionSubtree">
         <Sequence name="RuleActionSubtree">
             <EvaluateRuleAction rule_action_type="{rule_action_type}"/>
-            <Switch6 variable="{rule_action_type}" case_1="EXCHANGE_AMMO_AT_POINT" case_2="REMOTE_AMMO" case_3="REMOTE_HP" case_4="ACTIVATE_ENERGY" case_5="CLAIM_PERIODIC_AMMO" case_6="SWITCH_POSTURE">
+            <Switch6 variable="{rule_action_type}" case_1="EXCHANGE_AMMO_AT_POINT" case_2="REMOTE_AMMO" case_3="REMOTE_HP" case_4="ACTIVATE_ENERGY" case_5="UNUSED" case_6="SWITCH_POSTURE">
                 <ExchangeAmmoAtPoint/>
                 <RemoteExchangeAmmo/>
                 <RemoteExchangeHP/>
                 <ActivateEnergyMechanism/>
-                <ClaimPeriodicAmmo/>
+                <NoRuleAction/>
                 <HandlePostureSwitchRequest/>
                 <NoRuleAction/>
             </Switch6>

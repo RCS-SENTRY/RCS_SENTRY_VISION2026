@@ -457,6 +457,7 @@ inline std::uint8_t RuleActionTypeToProtocolValue(RuleActionType type)
         case RuleActionType::ACTIVATE_ENERGY:
             return 7;
         case RuleActionType::CLAIM_PERIODIC_AMMO:
+            // Not part of RM2026 official sentry 0x0120 command in phase 1.
             return 0;
         case RuleActionType::SWITCH_POSTURE:
             return 6;

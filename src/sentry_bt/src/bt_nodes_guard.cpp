@@ -136,7 +136,7 @@ public:
 
         const bool can_exchange_at_point =
             ctx_->ammo_low &&
-            (ctx_->on_supply || ctx_->on_base || ctx_->on_outpost || ctx_->on_fortress) &&
+            (ctx_->on_supply || ctx_->on_base || ctx_->on_outpost) &&
             ctx_->team_17mm_exchange_remain >= 10 && ctx_->gold >= 10;
         const bool can_remote_ammo =
             ctx_->is_disengaged && ctx_->ammo_low && ctx_->gold >= 150 &&

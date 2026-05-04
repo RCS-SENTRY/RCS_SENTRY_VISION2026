@@ -32,8 +32,10 @@ bool CooldownElapsed(std::uint64_t now_ms, std::uint64_t last_ms, std::uint64_t 
 // 很可能只需要重排这里的判断顺序。
 RuleActionType EvaluateRuleAction(const RobotContext& ctx, std::string& reason)
 {
+    // RM2026: 普通允许发弹量兑换点只按补给区/基地增益点/前哨站增益点处理。
+    // 堡垒提供独立的堡垒储备允许发弹量，不作为 EXCHANGE_AMMO_AT_POINT 的普通兑换点。
     const bool on_projectile_exchange_point =
-        ctx.on_supply || ctx.on_base || ctx.on_outpost || ctx.on_fortress;
+        ctx.on_supply || ctx.on_base || ctx.on_outpost;
 
     if (!ctx.match_started)
     {
@@ -224,8 +226,7 @@ public:
         {
             return BT::NodeStatus::FAILURE;
         }
-        if (!(ctx_->on_supply || ctx_->on_base || ctx_->on_outpost || ctx_->on_fortress) ||
-            ctx_->gold < 10)
+        if (!(ctx_->on_supply || ctx_->on_base || ctx_->on_outpost) || ctx_->gold < 10)
         {
             return BT::NodeStatus::FAILURE;
         }
@@ -248,7 +249,7 @@ public:
         }
 
         ctx_->last_rule_command =
-            "ExchangeAmmoAtPoint：提高非远程补弹累计目标值，等待底层在合法点位执行。";
+            "ExchangeAmmoAtPoint：普通发弹量兑换仅允许在补给区/基地增益点/前哨站增益点触发。";
         return BT::NodeStatus::SUCCESS;
     }
 };
@@ -404,6 +405,8 @@ void RegisterRuleNodes(BT::BehaviorTreeFactory& factory, std::shared_ptr<RobotCo
     RegisterContextNode<RemoteExchangeAmmoNode>(factory, "RemoteExchangeAmmo", ctx);
     RegisterContextNode<RemoteExchangeHPNode>(factory, "RemoteExchangeHP", ctx);
     RegisterContextNode<ActivateEnergyMechanismNode>(factory, "ActivateEnergyMechanism", ctx);
+    // RM2026 phase 1: ClaimPeriodicAmmo is registered as a local extension only.
+    // It is intentionally not connected from the main RuleActionSubtree.
     RegisterContextNode<ClaimPeriodicAmmoNode>(factory, "ClaimPeriodicAmmo", ctx);
     RegisterContextNode<HandlePostureSwitchRequestNode>(factory, "HandlePostureSwitchRequest", ctx);
     RegisterContextNode<NoRuleActionNode>(factory, "NoRuleAction", ctx);

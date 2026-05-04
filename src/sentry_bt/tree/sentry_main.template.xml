@@ -88,13 +88,13 @@
                case_2="REMOTE_AMMO"
                case_3="REMOTE_HP"
                case_4="ACTIVATE_ENERGY"
-               case_5="CLAIM_PERIODIC_AMMO"
+               case_5="UNUSED"
                case_6="SWITCH_POSTURE">
         <ExchangeAmmoAtPoint/>
         <RemoteExchangeAmmo/>
         <RemoteExchangeHP/>
         <ActivateEnergyMechanism/>
-        <ClaimPeriodicAmmo/>
+        <NoRuleAction/>
         <HandlePostureSwitchRequest/>
         <NoRuleAction/>
       </Switch6>

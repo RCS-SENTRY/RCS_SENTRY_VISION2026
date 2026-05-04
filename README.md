@@ -1,5 +1,506 @@
 # RCS Sentry Vision 2026
 
+# 哨兵上位机最小使用流程
+
+这份说明给队内调车人员看。比赛或测试前，必须先完成两件事：
+
+1. 先建图，保存当前场地的 `map.yaml`。
+2. 把所有战术点坐标重新量好，写进 `src/rm_sentry_decision/config/sentry_goals.yaml`。
+
+`sentry_goals.yaml` 里的默认坐标只是占位值，不能直接上场用。
+
+## 0. 当前系统能做什么
+
+当前主链：
+
+```text
+建图/定位/Nav2/PB2025 -> /cmd_vel -> /nav_cmd
+自瞄 -> /autoaim/gimbal_cmd_raw
+决策/脚本 -> /sentry/intent
+command_mux -> /gimbal_cmd
+goal_executor -> Nav2 goal + /sentry/nav_status
+```
+
+当前已经支持：
+
+1. 根据 `goal_id` 自动发 Nav2 目标点。
+2. 到目标附近后由 tactical reach 判定到点。
+3. 到点后通过 `/sentry/nav_status.reached` 触发下一步。
+4. `mission_runner` 按 YAML 脚本自动巡航。
+5. `sentry_bt` 根据血量、弹量、热量、自瞄敌情、导航状态输出意图。
+6. `command_mux` 合成最终 `/gimbal_cmd`。
+
+当前还不保证：
+
+1. 不建图就能跑。
+2. `goal` 坐标不用标定。
+3. 官方远程回血、远程补弹、复活一定生效。
+4. 下位机一定已经执行 `spin_mode` / `rule_action`。
+
+官方规则动作需要下位机 Control 后续把上位机字段转换为裁判系统 `0x0301` / `0x0120`。
+
+## 1. 场上标准流程
+
+Step 1：建图
+
+Step 2：保存 `map.yaml`
+
+Step 3：回出生点/休息区
+
+Step 4：加载地图启动导航
+
+Step 5：RViz 中 `2D Pose Estimate` 初始化
+
+Step 6：推车或开车到每个战术点，记录 `map` 坐标
+
+Step 7：填写 `sentry_goals.yaml`
+
+Step 8：先用 `mission_runner` 测试固定脚本
+
+Step 9：确认稳定后再启用 `sentry_bt` 全自动决策
+
+## 2. 编译
+
+```bash
+cd /home/rm/Desktop/SENTRY_FULL/XMU_RCS_SENTRY
+source /opt/ros/humble/setup.bash
+rosdep install -r --from-paths src --ignore-src --rosdistro humble -y
+colcon build --symlink-install --cmake-args -DCMAKE_BUILD_TYPE=Release
+source install/setup.bash
+```
+
+## 3. 建图
+
+建图时建议先不开自瞄，必要时不开串口。
+
+```bash
+ros2 launch rm_bringup sentry_bringup.launch.py \
+  navigation_only:=true \
+  debug_no_serial:=true \
+  enable_navigation:=true \
+  slam:=True \
+  use_rviz:=true \
+  enable_small_gicp:=false \
+  enable_second_lidar_safety:=false
+```
+
+确认 `/map` 有数据：
+
+```bash
+ros2 topic hz /map
+```
+
+保存地图：
+
+```bash
+mkdir -p /home/rm/Desktop/SENTRY_FULL/maps
+ros2 run nav2_map_server map_saver_cli \
+  -f /home/rm/Desktop/SENTRY_FULL/maps/new_map
+```
+
+下次导航使用：
+
+```text
+map:=/home/rm/Desktop/SENTRY_FULL/maps/new_map.yaml
+```
+
+## 4. 点位标定
+
+先加载地图并初始化定位：
+
+```bash
+ros2 launch rm_bringup sentry_bringup.launch.py \
+  navigation_only:=true \
+  debug_no_serial:=true \
+  enable_navigation:=true \
+  slam:=False \
+  map:=/home/rm/Desktop/SENTRY_FULL/maps/new_map.yaml \
+  use_rviz:=true
+```
+
+在 RViz 里用 `2D Pose Estimate` 给初始位姿。
+
+然后把车推到目标点，读取 `map` 坐标：
+
+```bash
+ros2 run tf2_ros tf2_echo map gimbal_yaw_fake
+```
+
+记录：
+
+```text
+translation.x
+translation.y
+yaw
+```
+
+填写：
+
+```text
+src/rm_sentry_decision/config/sentry_goals.yaml
+```
+
+示例：
+
+```yaml
+BASE_HOME:
+  id: 19
+  x: 0.15
+  y: -0.30
+  yaw: 0.0
+
+SUPPLY_LEFT:
+  id: 5
+  x: 1.80
+  y: 1.20
+  yaw: 0.0
+
+MID_PRESSURE:
+  id: 11
+  x: 3.20
+  y: 0.40
+  yaw: 0.0
+```
+
+注意：
+
+1. `sentry_goals.yaml` 里的默认坐标是占位值，不能直接上场用。
+2. 所有点都必须在当前 `map` 坐标系下重新量。
+
+## 5. 平时测试：mission_runner 预设脚本模式
+
+适合测试：
+
+1. 去某个点。
+2. 到点后停住。
+3. 到点后切 Attack / Defense。
+4. 到点后进入自瞄火控状态。
+
+配置文件：
+
+```text
+src/rm_sentry_decision/config/sentry_mission.yaml
+```
+
+示例：
+
+```yaml
+mission:
+  - name: go_mid_pressure
+    goal_id: 11
+    tactical_state: 6       # REPOSITION
+    posture_intent: 1       # MOVE
+    fire_policy: 0          # HOLD_FIRE
+    spin_mode: 0
+    supercap_mode: 0
+    wait_reached: true
+    timeout_sec: 20.0
+
+  - name: hold_mid_attack
+    goal_id: 11
+    tactical_state: 1       # HOLD
+    posture_intent: 2       # ATTACK
+    fire_policy: 2          # NORMAL
+    spin_mode: 1
+    supercap_mode: 0
+    duration_sec: 999.0
+```
+
+启动：
+
+```bash
+ros2 launch rm_bringup sentry_bringup.launch.py \
+  use_serial:=true \
+  serial_device:=/dev/rm_serial \
+  baudrate:=460800 \
+  enable_navigation:=true \
+  enable_vision:=true \
+  enable_sentry_command_mux:=true \
+  enable_sentry_goal_executor:=true \
+  enable_sentry_mission_runner:=true \
+  enable_sentry_decision:=false \
+  slam:=False \
+  map:=/home/rm/Desktop/SENTRY_FULL/maps/new_map.yaml \
+  use_rviz:=true
+```
+
+逻辑：
+
+```text
+mission_runner 发布 /sentry/intent
+goal_executor 发 Nav2 goal
+goal_executor 判断 tactical reach
+/sentry/nav_status.reached=true
+mission_runner 进入下一步
+command_mux 输出最终 /gimbal_cmd
+```
+
+注意：
+
+1. `mission_runner` 是脚本模式，不是真正智能决策。
+2. 它适合测试点位、到点、姿态切换。
+3. `mission_runner` 和 `sentry_bt` 不能同时作为 `/sentry/intent` 发布者。
+
+## 6. 比赛/全自动：sentry_bt 决策模式
+
+适合完整哨兵逻辑：
+
+1. 低血 -> 回安全点/回家。
+2. 低弹 -> 去补给点。
+3. 有敌人且状态健康 -> `ENGAGE`。
+4. 热量危险 -> 保守/停火。
+5. 到点 -> 切姿态。
+6. 死亡 -> `WAIT_REVIVE`。
+
+启动：
+
+```bash
+ros2 launch rm_bringup sentry_bringup.launch.py \
+  use_serial:=true \
+  serial_device:=/dev/rm_serial \
+  baudrate:=460800 \
+  enable_navigation:=true \
+  enable_vision:=true \
+  enable_decision:=true \
+  enable_sentry_decision:=true \
+  enable_sentry_command_mux:=true \
+  enable_sentry_goal_executor:=true \
+  enable_sentry_mission_runner:=false \
+  slam:=False \
+  map:=/home/rm/Desktop/SENTRY_FULL/maps/new_map.yaml \
+  use_rviz:=false
+```
+
+注意：
+
+1. `sentry_bt` 和 `mission_runner` 不能同时发布 `/sentry/intent`。
+2. 比赛全自动用 `sentry_bt`。
+3. 平时固定脚本测试用 `mission_runner`。
+
+## 7. 到点判定说明
+
+系统现在不强依赖 Nav2 自己返回 `SUCCEEDED`。
+
+原因：
+
+Nav2 可能已经到目标附近，但仍然 `active`，导致车在目标附近振荡。
+
+解决方式：
+
+`sentry_goal_executor` 自己根据 `map` 坐标判断 tactical reach。默认到目标 `0.45m` 内保持 `0.30s` 后认为战术到点，然后发布 `/sentry/nav_status.reached=true`。必要时 cancel Nav2 goal，让车停止继续追路径。
+
+所以决策层看：
+
+```text
+/sentry/nav_status.reached
+```
+
+不是看：
+
+```text
+/nav_cmd.is_reached
+```
+
+`/nav_cmd.is_reached` 仍然保留给下位机或旧链路，但不是决策闭环的主要依据。
+
+## 8. 调试检查
+
+决策和任务：
+
+```bash
+ros2 topic echo /sentry/intent
+ros2 topic echo /sentry/nav_status
+ros2 topic echo /sentry/mission_debug
+ros2 topic echo /sentry_bt/debug
+ros2 topic echo /sentry/nav_goal_debug
+ros2 topic echo /sentry/command_mux_debug
+```
+
+自瞄：
+
+```bash
+ros2 topic echo /autoaim/target_status
+ros2 topic echo /autoaim/debug_fire_gate
+ros2 topic echo /gimbal_cmd
+```
+
+导航：
+
+```bash
+ros2 topic echo /nav_cmd
+ros2 topic hz /cmd_vel
+ros2 topic hz /terrain_map
+ros2 run tf2_ros tf2_echo map gimbal_yaw_fake
+```
+
+检查 Nav2 action：
+
+```bash
+ros2 action list | grep navigate
+```
+
+## 9. 最小验收步骤
+
+A. 点位是否正确
+
+```bash
+ros2 run tf2_ros tf2_echo map gimbal_yaw_fake
+```
+
+确认当前位置和 `sentry_goals.yaml` 接近。
+
+B. `mission_runner` 是否发 intent
+
+```bash
+ros2 topic echo /sentry/intent
+```
+
+C. `goal_executor` 是否发目标
+
+```bash
+ros2 topic echo /sentry/nav_goal_debug
+```
+
+D. 是否战术到点
+
+```bash
+ros2 topic echo /sentry/nav_status
+```
+
+看到：
+
+```yaml
+reached: true
+canceled_by_tactical_reach: true
+```
+
+说明 tactical reach 生效。
+
+E. 到点后是否切姿态
+
+```bash
+ros2 topic echo /gimbal_cmd
+```
+
+检查：
+
+```text
+state_switch = 2  # Attack
+```
+
+或
+
+```text
+state_switch = 3  # Defense
+```
+
+F. 自瞄敌情是否进入决策
+
+```bash
+ros2 topic echo /autoaim/target_status
+ros2 topic echo /sentry_bt/debug
+```
+
+检查：
+
+```text
+has_target
+tracking
+fire_ready
+enemy_in_view
+```
+
+## 10. 推荐使用顺序
+
+第一天：
+
+```text
+只跑导航 + RViz
+建图
+标定 sentry_goals.yaml
+```
+
+第二步：
+
+```text
+开 mission_runner
+测：去点、到点、停住、切姿态
+```
+
+第三步：
+
+```text
+开 vision + command_mux
+测：到点后自瞄是否正常
+```
+
+第四步：
+
+```text
+开 sentry_bt
+测：低血/低弹/有敌人时是否切战术态
+```
+
+最后：
+
+```text
+关闭 RViz
+使用 tmux/SSH 低负载运行
+```
+
+## 11. 常见问题
+
+Q1：为什么车到点附近还不显示 Nav2 `SUCCEEDED`？
+
+正常。现在主要看 `/sentry/nav_status.reached`。
+
+Q2：为什么 `sentry_bt` 没有自动打敌人？
+
+检查：
+
+```bash
+ros2 topic echo /autoaim/target_status
+ros2 topic echo /sentry_bt/debug
+ros2 topic echo /sentry/command_mux_debug
+```
+
+至少需要：
+
+```text
+autoaim has_target/tracking/fire_ready 正常
+fire_policy 不是 HOLD_FIRE
+gimbal_status 中弹量、热量、发射供电正常
+```
+
+Q3：为什么低血没有回家？
+
+检查：
+
+```bash
+ros2 topic echo /gimbal_status
+ros2 topic echo /sentry_bt/debug
+ros2 topic echo /sentry/intent
+```
+
+重点看：
+
+```text
+current_hp 是否真实
+tactical_state 是否变成 RETREAT
+goal_id 是否变成 BASE_HOME / SAFE_RETREAT_A
+sentry_goals.yaml 坐标是否正确
+```
+
+Q4：为什么补血/补弹没有真正生效？
+
+上位机目前只表达规则动作意图。官方远程回血、远程补弹、复活、能量机关需要下位机 Control 把字段转换为裁判系统 `0x0301` / `0x0120`。上位机不能单独保证官方规则动作生效。
+
+Q5：为什么 `mission_runner` 和 `sentry_bt` 不能同时开？
+
+它们都会发布 `/sentry/intent`。同时开会导致两个大脑抢控制。测试脚本用 `mission_runner`，比赛智能用 `sentry_bt`。
+
+---
+
 RoboMaster 哨兵上位机 ROS 2 工作区，当前主线为：
 
 - XMU 通信栈：`rm_hw_bridge` + `rm_interfaces`

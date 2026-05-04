@@ -98,6 +98,10 @@ target are monotonic fields. The mux only passes current-cycle `0/1` pulse
 requests for remote ammo, remote HP, revive confirmation, instant revive, and
 energy activation. It does not claim those are final official counters.
 
+Fortress reserve projectile allowance is not the same as an ordinary projectile
+allowance exchange point. Ordinary `EXCHANGE_AMMO_AT_POINT` only triggers in the
+supply area, base buff point, or outpost buff point.
+
 `claim_periodic_ammo` is not part of official `0x0120`; phase 1 disables it and
 forces final `/gimbal_cmd.claim_periodic_ammo=0`.
 
