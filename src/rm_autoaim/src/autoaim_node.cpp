@@ -188,6 +188,13 @@ AutoaimNode::AutoaimNode(const rclcpp::NodeOptions & options)
   imu_buffer_duration_ = this->get_parameter("imu_buffer_duration").as_double();
   pnp_refine_          = this->get_parameter("pnp_refine_iterative").as_bool();
   use_imu_world_transform_ = this->get_parameter("use_imu_world_transform").as_bool();
+  if (use_imu_world_transform_) {
+    RCLCPP_WARN(
+      get_logger(),
+      "use_imu_world_transform=true is not supported by the V3 current-gimbal AimTarget path; "
+      "forcing current gimbal frame to avoid absolute/relative yaw mismatch.");
+    use_imu_world_transform_ = false;
+  }
   temp_lost_timeout_sec_ = positive_or_default(
     this->get_parameter("temp_lost_timeout_sec").as_double(), 0.30,
     "temp_lost_timeout_sec", get_logger());
@@ -297,6 +304,10 @@ AutoaimNode::AutoaimNode(const rclcpp::NodeOptions & options)
   this->declare_parameter<double>("fire_delay", 0.10);
   this->declare_parameter<double>("yaw_offset", 0.0);
   this->declare_parameter<bool>("pitch_invert", false);
+  this->declare_parameter<bool>("output_relative_command", false);
+  this->declare_parameter<double>("dynamic_lead_scale", 0.75);
+  this->declare_parameter<double>("manual_compensator.extra_yaw_offset", 0.0);
+  this->declare_parameter<double>("manual_compensator.extra_pitch_offset", 0.0);
 
   this->declare_parameter<double>("fire_tolerance", 0.03);
   this->declare_parameter<bool>("use_dynamic_fire_window", true);
@@ -311,6 +322,10 @@ AutoaimNode::AutoaimNode(const rclcpp::NodeOptions & options)
   aimer_params.fire_delay       = this->get_parameter("fire_delay").as_double();
   aimer_params.yaw_offset       = this->get_parameter("yaw_offset").as_double();
   aimer_params.pitch_invert     = this->get_parameter("pitch_invert").as_bool();
+  aimer_params.dynamic_lead_scale = std::clamp(
+    this->get_parameter("dynamic_lead_scale").as_double(), 0.0, 2.0);
+  aimer_params.output_relative_command =
+    this->get_parameter("output_relative_command").as_bool();
 
   aimer_params.fire_tolerance   = this->get_parameter("fire_tolerance").as_double();
   aimer_params.use_dynamic_fire_window =
@@ -423,6 +438,8 @@ void AutoaimNode::publish_fire_debug(
   ss << std::fixed << std::setprecision(3)
      << "backend=" << backend
      << " source=" << aim_source
+     << " cmd_mode=" << (aimer_.getParams().output_relative_command ?
+        "relative" : "absolute")
      << " target_id=" << target_id
      << " armor_type=" << armor_type
      << " raw_pnp_pos=" << vec_to_debug(raw_pnp_pos)
@@ -543,6 +560,14 @@ void AutoaimNode::on_armors(const ArmorDetections::ConstSharedPtr msg)
     const double age_sec =
       has_last_detection_ ? (t_img - last_detection_time_).seconds() : -1.0;
 
+    double hold_yaw_rad = 0.0;
+    double hold_pitch_rad = 0.0;
+    {
+      std::lock_guard<std::mutex> lock(gimbal_mutex_);
+      hold_yaw_rad = current_yaw_deg_ * M_PI / 180.0;
+      hold_pitch_rad = current_pitch_deg_ * M_PI / 180.0;
+    }
+
     const bool within_temp_hold =
       age_sec >= 0.0 && age_sec < temp_lost_timeout_sec_;
     const bool within_lost_timeout =
@@ -555,8 +580,11 @@ void AutoaimNode::on_armors(const ArmorDetections::ConstSharedPtr msg)
 
     if (can_enter_temp_lost) {
       track_state_ = AutoaimTrackState::TEMP_LOST;
+      // Keep tracker output at the current filtered armor point. Aimer is the
+      // single owner of fire_delay + bullet-flight lead; applying fire_delay in
+      // both places over-leads spinning targets.
       const AimTarget held_target =
-        csu_tracker_.markLost(current_time, aimer_.getParams().fire_delay);
+        csu_tracker_.markLost(current_time, 0.0);
 
       GimbalCmd cmd;
       if (hold_last_cmd_in_temp_lost_ && has_last_good_cmd_) {
@@ -566,8 +594,8 @@ void AutoaimNode::on_armors(const ArmorDetections::ConstSharedPtr msg)
           cmd.pitch_vel = 0.0;
         }
       } else {
-        cmd.target_yaw = 0.0;
-        cmd.target_pitch = 0.0;
+        cmd.target_yaw = hold_yaw_rad;
+        cmd.target_pitch = hold_pitch_rad;
         cmd.yaw_vel = 0.0;
         cmd.pitch_vel = 0.0;
       }
@@ -608,8 +636,8 @@ void AutoaimNode::on_armors(const ArmorDetections::ConstSharedPtr msg)
     csu_tracker_.reset();
 
     GimbalCmd cmd;
-    cmd.target_yaw   = 0.0;
-    cmd.target_pitch = 0.0;
+    cmd.target_yaw   = hold_yaw_rad;
+    cmd.target_pitch = hold_pitch_rad;
     cmd.yaw_vel      = 0.0;
     cmd.pitch_vel    = 0.0;
     cmd.state_switch = 1;   // Move — 回到巡逻/默认姿态
@@ -736,7 +764,10 @@ void AutoaimNode::on_armors(const ArmorDetections::ConstSharedPtr msg)
     track_state_ = AutoaimTrackState::TRACKING;
   } else {
     tracker_backend_ = "csu_tracker";
-    tracker_target = csu_tracker_.update(best, current_time, aimer_.getParams().fire_delay);
+    // Keep tracker prediction at the current filtered armor point. Dynamic
+    // lead is applied once in Aimer using velocity_gimbal, fire_delay and
+    // bullet flight time.
+    tracker_target = csu_tracker_.update(best, current_time, 0.0);
     tracker_frame_count_ = csu_tracker_.trackingFrames();
     track_state_ =
       csu_tracker_.state() == CsuTrackerState::TEMP_LOST ? AutoaimTrackState::TEMP_LOST :
@@ -777,8 +808,12 @@ void AutoaimNode::on_armors(const ArmorDetections::ConstSharedPtr msg)
     }
   }
 
-  const double manual_pitch_offset = manual_compensator_.pitchOffset(selected_target.distance);
-  const double manual_yaw_offset = manual_compensator_.yawOffset(selected_target.distance);
+  const double manual_pitch_offset =
+    manual_compensator_.pitchOffset(selected_target.distance) +
+    this->get_parameter("manual_compensator.extra_pitch_offset").as_double();
+  const double manual_yaw_offset =
+    manual_compensator_.yawOffset(selected_target.distance) +
+    this->get_parameter("manual_compensator.extra_yaw_offset").as_double();
 
   auto aim = aimer_.solve(
     selected_target,
@@ -786,9 +821,10 @@ void AutoaimNode::on_armors(const ArmorDetections::ConstSharedPtr msg)
     cur_pitch,
     tracker_frame_count_,
     cur_bullet,
-    !use_imu_world_transform_,
+    true,
     manual_yaw_offset,
-    manual_pitch_offset);
+    manual_pitch_offset,
+    std::clamp(this->get_parameter("dynamic_lead_scale").as_double(), 0.0, 2.0));
 
   const bool allow_fire_on_raw =
     this->get_parameter("fire.allow_fire_on_raw_pnp_fallback").as_bool();
@@ -824,10 +860,15 @@ void AutoaimNode::on_armors(const ArmorDetections::ConstSharedPtr msg)
 
   double cur_yaw_rad = cur_yaw * M_PI / 180.0;
   double cur_pitch_rad = cur_pitch * M_PI / 180.0;
-  double cmd_yaw_err_deg = std::atan2(
-    std::sin(aim.target_yaw - cur_yaw_rad),
-    std::cos(aim.target_yaw - cur_yaw_rad)) * 180.0 / M_PI;
-  double cmd_pitch_err_deg = (aim.target_pitch - cur_pitch_rad) * 180.0 / M_PI;
+  const bool relative_output = aimer_.getParams().output_relative_command;
+  double cmd_yaw_err_deg = relative_output ?
+    aim.target_yaw * 180.0 / M_PI :
+    std::atan2(
+      std::sin(aim.target_yaw - cur_yaw_rad),
+      std::cos(aim.target_yaw - cur_yaw_rad)) * 180.0 / M_PI;
+  double cmd_pitch_err_deg = relative_output ?
+    aim.target_pitch * 180.0 / M_PI :
+    (aim.target_pitch - cur_pitch_rad) * 180.0 / M_PI;
 
   if (reason.empty()) {
     if (!selected_target.valid) {

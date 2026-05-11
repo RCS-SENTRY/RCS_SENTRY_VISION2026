@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 
 import math
+import signal
 import time
 
 import rclpy
@@ -29,7 +30,7 @@ class PbCmdVelToNavCmd(Node):
         self.declare_parameter("goal_reached_latch_sec", 1.0)
         self.declare_parameter("force_zero_angular_z", True)
         self.declare_parameter("invert_linear_y", False)
-        self.declare_parameter("shutdown_zero_burst_count", 8)
+        self.declare_parameter("shutdown_zero_burst_count", 20)
         self.declare_parameter("shutdown_zero_burst_interval_sec", 0.02)
 
         input_topic = str(self.get_parameter("input_topic").value)
@@ -91,6 +92,7 @@ class PbCmdVelToNavCmd(Node):
         self.goal_reached_until = None
         self.has_cmd = False
         self.timeout_reported = False
+        self.shutdown_zero_sent = False
 
         self.get_logger().info(
             "PB cmd_vel bridge ready: %s -> %s, timeout=%.2fs, force_zero_angular_z=%s"
@@ -162,19 +164,39 @@ class PbCmdVelToNavCmd(Node):
         return nav
 
     def publish_shutdown_zero_burst(self) -> None:
+        if self.shutdown_zero_sent:
+            return
+        self.shutdown_zero_sent = True
+
         zero = self.twist_to_nav_cmd(Twist(), is_reached=0)
         for _ in range(self.shutdown_zero_burst_count):
             self.nav_cmd_pub.publish(zero)
-            try:
-                rclpy.spin_once(self, timeout_sec=0.0)
-            except Exception:
-                pass
             time.sleep(self.shutdown_zero_burst_interval_sec)
+
+    def request_shutdown(self, signum=None, frame=None) -> None:
+        del frame
+        try:
+            signal_name = signal.Signals(signum).name if signum is not None else "shutdown"
+        except ValueError:
+            signal_name = str(signum)
+
+        try:
+            self.get_logger().info(
+                "%s received; publishing zero NavCmd burst" % signal_name
+            )
+            self.publish_shutdown_zero_burst()
+        except Exception:
+            pass
+
+        if rclpy.ok():
+            rclpy.shutdown()
 
 
 def main(args=None) -> None:
     rclpy.init(args=args)
     node = PbCmdVelToNavCmd()
+    signal.signal(signal.SIGINT, node.request_shutdown)
+    signal.signal(signal.SIGTERM, node.request_shutdown)
     try:
         rclpy.spin(node)
     except (KeyboardInterrupt, ExternalShutdownException):

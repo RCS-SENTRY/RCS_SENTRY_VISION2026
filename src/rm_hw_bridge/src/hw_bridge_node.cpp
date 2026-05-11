@@ -170,10 +170,10 @@ private:
         reinterpret_cast<uint8_t *>(&safe_nav), sizeof(safe_nav) - 2);
 
       RCLCPP_INFO(get_logger(), "Shutdown requested; sending zero-speed safe frames");
-      for (int i = 0; i < 8; ++i) {
+      for (int i = 0; i < 20; ++i) {
         serial_->write(reinterpret_cast<uint8_t *>(&safe_gimbal), sizeof(safe_gimbal));
         serial_->write(reinterpret_cast<uint8_t *>(&safe_nav), sizeof(safe_nav));
-        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
       }
     } catch (const std::exception & ex) {
       RCLCPP_WARN(get_logger(), "Failed to send shutdown safe frames: %s", ex.what());
@@ -503,7 +503,9 @@ private:
 int main(int argc, char ** argv)
 {
   rclcpp::init(argc, argv);
-  rclcpp::spin(std::make_shared<HwBridgeNode>());
+  auto node = std::make_shared<HwBridgeNode>();
+  rclcpp::spin(node);
+  node.reset();
   rclcpp::shutdown();
   return 0;
 }

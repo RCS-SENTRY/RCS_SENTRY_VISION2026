@@ -2,10 +2,12 @@
 #include <cmath>
 #include <cstdint>
 #include <iostream>
+#include <limits>
 #include <memory>
 #include <sstream>
 #include <string>
 #include <unordered_map>
+#include <vector>
 
 #include <action_msgs/msg/goal_status.hpp>
 #include <geometry_msgs/msg/pose_stamped.hpp>
@@ -33,6 +35,8 @@ struct GoalPose
     double x{0.0};
     double y{0.0};
     double yaw{0.0};
+    double radius{0.0};
+    std::vector<GoalPose> candidates{};
 };
 
 geometry_msgs::msg::Quaternion QuaternionFromYaw(double yaw)
@@ -48,6 +52,34 @@ geometry_msgs::msg::Quaternion QuaternionFromYaw(double yaw)
 const char* BoolString(bool value)
 {
     return value ? "true" : "false";
+}
+
+bool IsNoTimeoutGoal(std::uint8_t goal_id)
+{
+    return goal_id == 19;  // BASE_HOME: death-return hard task must not be timed out away.
+}
+
+GoalPose PoseFromYaml(const std::string& name, std::uint8_t id, double default_radius,
+                      const YAML::Node& node)
+{
+    GoalPose pose;
+    pose.name = name;
+    pose.id = id;
+    if (node.IsSequence())
+    {
+        pose.x = node.size() > 0 ? node[0].as<double>() : 0.0;
+        pose.y = node.size() > 1 ? node[1].as<double>() : 0.0;
+        pose.yaw = node.size() > 2 ? node[2].as<double>() : 0.0;
+    }
+    else
+    {
+        pose.x = node["x"].as<double>();
+        pose.y = node["y"].as<double>();
+        pose.yaw = node["yaw"].as<double>();
+        pose.radius = node["radius"] ? node["radius"].as<double>() : default_radius;
+    }
+    pose.radius = pose.radius > 1e-6 ? pose.radius : default_radius;
+    return pose;
 }
 }  // namespace
 
@@ -72,6 +104,9 @@ public:
         tactical_reach_hold_sec_ = declare_parameter<double>("tactical_reach_hold_sec", 0.30);
         cancel_nav2_on_tactical_reach_ =
             declare_parameter<bool>("cancel_nav2_on_tactical_reach", true);
+        goal_active_timeout_sec_ = declare_parameter<double>("goal_active_timeout_sec", 10.0);
+        cancel_nav2_on_active_timeout_ =
+            declare_parameter<bool>("cancel_nav2_on_active_timeout", true);
         robot_base_frame_ =
             declare_parameter<std::string>("robot_base_frame", "gimbal_yaw_fake");
         map_frame_ = declare_parameter<std::string>("map_frame", "map");
@@ -124,11 +159,21 @@ private:
             const std::string name = item.first.as<std::string>();
             const YAML::Node node = item.second;
             GoalPose pose;
-            pose.name = name;
-            pose.id = static_cast<std::uint8_t>(node["id"].as<int>());
-            pose.x = node["x"].as<double>();
-            pose.y = node["y"].as<double>();
-            pose.yaw = node["yaw"].as<double>();
+            const auto id = static_cast<std::uint8_t>(node["id"].as<int>());
+            pose = PoseFromYaml(name, id, tactical_reach_radius_, node);
+            if (node["candidates"] && node["candidates"].IsSequence())
+            {
+                for (const auto& candidate_node : node["candidates"])
+                {
+                    auto candidate =
+                        PoseFromYaml(name, id, pose.radius, candidate_node);
+                    pose.candidates.push_back(candidate);
+                }
+            }
+            if (pose.candidates.empty())
+            {
+                pose.candidates.push_back(pose);
+            }
             goals_by_id_[pose.id] = pose;
         }
 
@@ -150,6 +195,8 @@ private:
             reached_ = false;
             failed_ = false;
             canceled_by_tactical_reach_ = false;
+            tactical_cancel_requested_ = false;
+            active_timeout_cancel_requested_ = false;
             active_goal_ = GoalPose{};
             active_goal_id_ = 0;
             last_goal_id_ = 0;
@@ -159,13 +206,31 @@ private:
             return;
         }
 
-        const auto goal_it = goals_by_id_.find(intent.goal_id);
+        auto effective_goal_id = intent.goal_id;
+        auto goal_it = goals_by_id_.find(effective_goal_id);
+        std::string fallback_reason;
+        if (goal_it == goals_by_id_.end() && intent.goal_id == 19)
+        {
+            for (const auto fallback_id : {static_cast<std::uint8_t>(5),
+                                           static_cast<std::uint8_t>(6)})
+            {
+                const auto fallback_it = goals_by_id_.find(fallback_id);
+                if (fallback_it != goals_by_id_.end())
+                {
+                    effective_goal_id = fallback_id;
+                    goal_it = fallback_it;
+                    fallback_reason =
+                        "BASE_HOME missing in sentry_goals.yaml; fallback to supply goal";
+                    break;
+                }
+            }
+        }
         if (goal_it == goals_by_id_.end())
         {
             failed_ = true;
             active_ = false;
-            active_goal_id_ = intent.goal_id;
-            active_goal_ = GoalPose{"UNKNOWN", intent.goal_id, 0.0, 0.0, 0.0};
+            active_goal_id_ = effective_goal_id;
+            active_goal_ = GoalPose{"UNKNOWN", effective_goal_id, 0.0, 0.0, 0.0};
             nav2_status_ = GoalStatus::STATUS_UNKNOWN;
             PublishStatus("goal_id not present in sentry_goals.yaml");
             PublishDebug(false, "goal_id not present in sentry_goals.yaml");
@@ -173,7 +238,7 @@ private:
         }
 
         const auto now_time = now();
-        if (last_goal_id_ == intent.goal_id)
+        if (last_goal_id_ == effective_goal_id && !(failed_ && IsNoTimeoutGoal(effective_goal_id)))
         {
             PublishStatus(active_ ? "same goal_id still active" : "same goal_id already handled");
             PublishDebug(false, active_ ? "same goal_id still active" : "same goal_id already handled");
@@ -195,7 +260,7 @@ private:
                 "Nav2 NavigateToPose action server '%s' is not available",
                 action_name_.c_str());
             active_goal_ = goal_it->second;
-            active_goal_id_ = intent.goal_id;
+            active_goal_id_ = effective_goal_id;
             active_ = false;
             reached_ = false;
             failed_ = true;
@@ -211,23 +276,30 @@ private:
             action_client_->async_cancel_goal(current_goal_handle_);
         }
 
+        GoalPose selected_goal = SelectGoalCandidate(goal_it->second);
+
         NavigateToPose::Goal goal;
         goal.pose.header.stamp = now_time;
         goal.pose.header.frame_id = goal_frame_id_;
-        goal.pose.pose.position.x = goal_it->second.x;
-        goal.pose.pose.position.y = goal_it->second.y;
+        goal.pose.pose.position.x = selected_goal.x;
+        goal.pose.pose.position.y = selected_goal.y;
         goal.pose.pose.position.z = 0.0;
-        goal.pose.pose.orientation = QuaternionFromYaw(goal_it->second.yaw);
+        goal.pose.pose.orientation = QuaternionFromYaw(selected_goal.yaw);
 
-        active_goal_ = goal_it->second;
-        active_goal_id_ = intent.goal_id;
+        active_goal_ = selected_goal;
+        active_goal_.name = goal_it->second.name;
+        active_goal_.id = goal_it->second.id;
+        active_goal_.radius = goal_it->second.radius;
+        active_goal_id_ = effective_goal_id;
         active_ = true;
         reached_ = false;
         failed_ = false;
         canceled_by_tactical_reach_ = false;
         tactical_cancel_requested_ = false;
+        active_timeout_cancel_requested_ = false;
         nav2_status_ = GoalStatus::STATUS_ACCEPTED;
         reach_enter_time_ = rclcpp::Time(0, 0, get_clock()->get_clock_type());
+        goal_start_time_ = now_time;
 
         auto options = rclcpp_action::Client<NavigateToPose>::SendGoalOptions();
         options.goal_response_callback =
@@ -257,10 +329,17 @@ private:
             };
 
         action_client_->async_send_goal(goal, options);
-        last_goal_id_ = intent.goal_id;
+        last_goal_id_ = effective_goal_id;
         last_send_time_ = now_time;
-        PublishStatus(intent.reason.empty() ? "sent new NavigateToPose goal" : intent.reason);
-        PublishDebug(true, intent.reason.empty() ? "sent new NavigateToPose goal" : intent.reason);
+        const auto send_reason =
+            fallback_reason.empty()
+                ? (intent.reason.empty() ? std::string("sent new NavigateToPose goal")
+                                         : intent.reason)
+                : (fallback_reason + "; " +
+                   (intent.reason.empty() ? std::string("sent new NavigateToPose goal")
+                                          : intent.reason));
+        PublishStatus(send_reason);
+        PublishDebug(true, send_reason);
     }
 
     void OnActionResult(const GoalHandleNavigateToPose::WrappedResult& result)
@@ -306,6 +385,31 @@ private:
         }
     }
 
+    GoalPose SelectGoalCandidate(const GoalPose& goal)
+    {
+        if (goal.candidates.empty())
+        {
+            return goal;
+        }
+
+        std::string reason;
+        const bool pose_ok = UpdateRobotPose(reason);
+        auto best = goal.candidates.front();
+        double best_score = std::numeric_limits<double>::infinity();
+        for (const auto& candidate : goal.candidates)
+        {
+            const double score = pose_ok
+                ? std::hypot(robot_x_ - candidate.x, robot_y_ - candidate.y)
+                : std::hypot(goal.x - candidate.x, goal.y - candidate.y);
+            if (score < best_score)
+            {
+                best = candidate;
+                best_score = score;
+            }
+        }
+        return best;
+    }
+
     bool UpdateRobotPose(std::string& reason)
     {
         try
@@ -339,12 +443,19 @@ private:
                 if (active_ && enable_tactical_reach_)
                 {
                     const auto now_time = now();
-                    if (distance_to_goal_ <= tactical_reach_radius_)
+                    const bool goal_timeout =
+                        goal_active_timeout_sec_ > 0.0 &&
+                        !IsNoTimeoutGoal(active_goal_id_) &&
+                        goal_start_time_.nanoseconds() != 0 &&
+                        (now_time - goal_start_time_).seconds() >= goal_active_timeout_sec_;
+                    const double reach_radius =
+                        active_goal_.radius > 1e-6 ? active_goal_.radius : tactical_reach_radius_;
+                    if (distance_to_goal_ <= reach_radius)
                     {
                         if (reach_enter_time_.nanoseconds() == 0)
                         {
                             reach_enter_time_ = now_time;
-                            reason = "inside tactical reach radius";
+                            reason = "inside goal/candidate reach radius";
                         }
                         else if ((now_time - reach_enter_time_).seconds() >=
                                  tactical_reach_hold_sec_)
@@ -365,8 +476,24 @@ private:
                         }
                         else
                         {
-                            reason = "holding inside tactical reach radius";
+                            reason = "holding inside goal/candidate reach radius";
                         }
+                    }
+                    else if (goal_timeout)
+                    {
+                        active_ = false;
+                        reached_ = false;
+                        failed_ = true;
+                        nav2_status_ = GoalStatus::STATUS_CANCELING;
+                        reason = "goal active timeout; marking stuck and switching goal";
+                        if (cancel_nav2_on_active_timeout_ && current_goal_handle_ &&
+                            !active_timeout_cancel_requested_)
+                        {
+                            active_timeout_cancel_requested_ = true;
+                            action_client_->async_cancel_goal(current_goal_handle_);
+                            reason += "; canceling Nav2 goal";
+                        }
+                        PublishDebug(false, reason);
                     }
                     else
                     {
@@ -407,7 +534,8 @@ private:
         status.robot_y = static_cast<float>(robot_y_);
         status.robot_yaw = robot_yaw_;
         status.distance_to_goal = distance_to_goal_;
-        status.reach_radius = static_cast<float>(tactical_reach_radius_);
+        status.reach_radius = static_cast<float>(
+            active_goal_.radius > 1e-6 ? active_goal_.radius : tactical_reach_radius_);
         status.nav2_status = nav2_status_;
         status.reason = reason;
         nav_status_pub_->publish(status);
@@ -451,6 +579,8 @@ private:
     double tactical_reach_radius_{0.45};
     double tactical_reach_hold_sec_{0.30};
     bool cancel_nav2_on_tactical_reach_{true};
+    double goal_active_timeout_sec_{10.0};
+    bool cancel_nav2_on_active_timeout_{true};
     double tf_timeout_sec_{0.05};
 
     std::unordered_map<std::uint8_t, GoalPose> goals_by_id_{};
@@ -462,6 +592,7 @@ private:
     bool failed_{false};
     bool canceled_by_tactical_reach_{false};
     bool tactical_cancel_requested_{false};
+    bool active_timeout_cancel_requested_{false};
     bool has_robot_pose_{false};
     double robot_x_{0.0};
     double robot_y_{0.0};
@@ -471,6 +602,7 @@ private:
     std::string last_status_reason_{};
     rclcpp::Time last_send_time_{0, 0, get_clock()->get_clock_type()};
     rclcpp::Time reach_enter_time_{0, 0, get_clock()->get_clock_type()};
+    rclcpp::Time goal_start_time_{0, 0, get_clock()->get_clock_type()};
 
     std::unique_ptr<tf2_ros::Buffer> tf_buffer_{};
     std::unique_ptr<tf2_ros::TransformListener> tf_listener_{};

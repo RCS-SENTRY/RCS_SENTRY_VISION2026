@@ -1,5 +1,8 @@
 #include "bt_nodes_basic.hpp"
 
+#include <algorithm>
+#include <sstream>
+
 #include "bt_node_common.hpp"
 #include "sentry_decision_protocol.h"
 
@@ -14,6 +17,30 @@ namespace
 bool UpdateHysteresis(bool previous, bool enter, bool exit)
 {
     return previous ? !exit : enter;
+}
+
+std::uint64_t ElapsedSince(std::uint64_t now_ms, std::uint64_t then_ms)
+{
+    return (then_ms == 0 || now_ms <= then_ms) ? 0 : (now_ms - then_ms);
+}
+
+std::uint64_t DwellRequiredForState(const RobotContext& ctx)
+{
+    switch (ctx.tactical_state)
+    {
+        case TacticalState::HOLD:
+            return ctx.goal_dwell_hold_ms;
+        case TacticalState::SEARCH:
+        case TacticalState::REPOSITION:
+            return ctx.goal_dwell_search_ms;
+        case TacticalState::RESUPPLY:
+            return ctx.goal_dwell_resupply_ms;
+        case TacticalState::ENGAGE:
+            return ctx.goal_dwell_engage_ms;
+        case TacticalState::RETREAT:
+            return 0;
+    }
+    return ctx.goal_dwell_default_ms;
 }
 
 // UpdateBlackboardNode 是整棵主树的起始节点。
@@ -52,13 +79,135 @@ public:
 
         // 便捷状态来自原始输入的快速归纳。
         // 这些值不是底层传感器直接给出的，而是为了后面的节点判断更方便。
-        ctx_->ammo_low = UpdateHysteresis(ctx_->ammo_low, ctx_->ammo_17 < 80, ctx_->ammo_17 > 120);
+        ctx_->ammo_low = UpdateHysteresis(ctx_->ammo_low,
+                                          ctx_->ammo_17 < ctx_->ammo_resupply_enter_count,
+                                          ctx_->ammo_17 > ctx_->ammo_resupply_exit_count);
         const float hp_ratio = SafeRatio(ctx_->hp, ctx_->hp_max);
-        ctx_->need_supply =
-            UpdateHysteresis(ctx_->need_supply, ctx_->ammo_low || hp_ratio < 0.33f,
-                             (!ctx_->ammo_low) && hp_ratio > 0.45f);
+        ctx_->at_valid_recovery_rfid = ctx_->on_supply || ctx_->on_base;
+        ctx_->hp_recovery_active = UpdateHysteresis(
+            ctx_->hp_recovery_active, hp_ratio < ctx_->hp_resupply_enter_ratio,
+            hp_ratio > ctx_->hp_resupply_exit_ratio);
+        ctx_->ammo_recovery_active = UpdateHysteresis(
+            ctx_->ammo_recovery_active, ctx_->ammo_17 < ctx_->ammo_resupply_enter_count,
+            ctx_->ammo_17 > ctx_->ammo_resupply_exit_count);
+        if (ctx_->is_dead)
+        {
+            ctx_->hp_recovery_active = false;
+            ctx_->ammo_recovery_active = false;
+        }
+        ctx_->resupply_active = ctx_->hp_recovery_active || ctx_->ammo_recovery_active;
+        ctx_->need_supply = ctx_->resupply_active;
         ctx_->need_emergency_safety = !ctx_->referee_link_fresh;
         ctx_->need_rule_action = false;
+
+        if (!ctx_->resupply_active)
+        {
+            ctx_->resupply_enter_ms = 0;
+            ctx_->resupply_reached_ms = 0;
+            ctx_->resupply_rfid_confirm_ms = 0;
+            ctx_->resupply_last_candidate_switch_ms = 0;
+            ctx_->resupply_goal_start_ms = 0;
+            ctx_->resupply_candidate_index = 0;
+            ctx_->resupply_goal_current = ctx_->resupply_candidates.empty()
+                                              ? std::string("SUPPLY_LEFT")
+                                              : ctx_->resupply_candidates.front();
+            ctx_->resupply_rfid_confirmed = false;
+            ctx_->resupply_waiting_recovery = false;
+            ctx_->resupply_reason.clear();
+        }
+        else if (ctx_->resupply_enter_ms == 0)
+        {
+            ctx_->resupply_enter_ms = ctx_->now_ms;
+            ctx_->resupply_goal_start_ms = ctx_->now_ms;
+            ctx_->resupply_goal_current = ctx_->resupply_candidates.empty()
+                                              ? std::string("SUPPLY_LEFT")
+                                              : ctx_->resupply_candidates.front();
+            ctx_->resupply_reason = "低血/低弹进入补给闭环。";
+        }
+
+        ctx_->dead_chassis_can_move = ctx_->match_started && ctx_->referee_link_fresh;
+        if (ctx_->dead_return_home_active && hp_ratio >= ctx_->dead_full_hp_exit_ratio &&
+            ctx_->hp > 0)
+        {
+            ctx_->dead_return_home_active = false;
+            ctx_->dead_home_rfid_confirmed = false;
+            ctx_->dead_waiting_full_hp = false;
+            ctx_->dead_return_start_ms = 0;
+            ctx_->dead_home_rfid_confirm_ms = 0;
+            ctx_->dead_return_reason = "血量已恢复到退出阈值，死亡回家硬任务结束。";
+        }
+        else if (ctx_->is_dead && ctx_->dead_return_home_enabled && ctx_->dead_chassis_can_move)
+        {
+            if (!ctx_->dead_return_home_active)
+            {
+                ctx_->dead_return_start_ms = ctx_->now_ms;
+                ctx_->dead_home_rfid_confirm_ms = 0;
+            }
+            ctx_->dead_return_home_active = true;
+            ctx_->dead_return_reason =
+                "机器人死亡但裁判链路新鲜，按热修规则硬导航回基地/补给区等待回血。";
+
+            const bool at_dead_recovery = ctx_->on_base || ctx_->on_supply;
+            if (at_dead_recovery)
+            {
+                if (ctx_->dead_home_rfid_confirm_ms == 0)
+                {
+                    ctx_->dead_home_rfid_confirm_ms = ctx_->now_ms;
+                }
+                const bool hold_ok =
+                    ElapsedSince(ctx_->now_ms, ctx_->dead_home_rfid_confirm_ms) >=
+                    ctx_->dead_return_rfid_confirm_hold_ms;
+                ctx_->dead_home_rfid_confirmed = hold_ok;
+                ctx_->dead_waiting_full_hp = hold_ok;
+                ctx_->dead_return_reason += ctx_->on_base
+                                                ? " RFID=on_base，等待回血。"
+                                                : " RFID=on_supply，作为恢复点等待回血。";
+            }
+            else
+            {
+                ctx_->dead_home_rfid_confirm_ms = 0;
+                ctx_->dead_home_rfid_confirmed = false;
+                ctx_->dead_waiting_full_hp = false;
+            }
+        }
+        else if (!ctx_->is_dead && !ctx_->dead_waiting_full_hp)
+        {
+            ctx_->dead_return_home_active = false;
+            ctx_->dead_home_rfid_confirmed = false;
+            ctx_->dead_return_start_ms = 0;
+            ctx_->dead_home_rfid_confirm_ms = 0;
+        }
+
+        const bool nav_goal_changed = ctx_->current_goal_id != ctx_->last_seen_nav_goal_id;
+        const bool reached_edge = ctx_->nav_goal_reached && !ctx_->last_nav_goal_reached;
+        if (nav_goal_changed)
+        {
+            ctx_->dwell_active = false;
+            ctx_->dwell_complete = false;
+            ctx_->dwell_start_ms = 0;
+            ctx_->dwell_goal_id = 0;
+            ctx_->dwell_remaining_ms = 0;
+            ctx_->dwell_reason.clear();
+        }
+        if (ctx_->nav_goal_reached && ctx_->current_goal_id != 0 &&
+            (reached_edge || nav_goal_changed))
+        {
+            ctx_->dwell_goal_id = ctx_->current_goal_id;
+            ctx_->dwell_start_ms = ctx_->now_ms;
+            ctx_->dwell_active = true;
+            ctx_->dwell_complete = false;
+            ctx_->dwell_reason = "导航到点，开始 sentry_bt dwell。";
+        }
+        if (ctx_->dwell_active)
+        {
+            ctx_->dwell_required_ms = DwellRequiredForState(*ctx_);
+            const auto elapsed = ElapsedSince(ctx_->now_ms, ctx_->dwell_start_ms);
+            ctx_->dwell_complete = elapsed >= ctx_->dwell_required_ms;
+            ctx_->dwell_remaining_ms =
+                ctx_->dwell_complete ? 0 : (ctx_->dwell_required_ms - elapsed);
+        }
+        ctx_->last_seen_nav_goal_id = ctx_->current_goal_id;
+        ctx_->last_nav_goal_reached = ctx_->nav_goal_reached;
 
         // 清理本轮要重新生成的解释性文本。
         ctx_->tactical_reason.clear();

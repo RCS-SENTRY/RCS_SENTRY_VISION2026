@@ -132,8 +132,8 @@ terrain_analysis:
     voxelPointUpdateThre: 100
     voxelTimeUpdateThre: 1.0
     minRelZ: -1.5                       # min_rel_z 以及 max_rel_z 限制了有效点云点的Z值范围，用于对天花板和地板进行处理
-    maxRelZ: 0.5
-    disRatioZ: 0.2                      # Z 值的最大最小范围由这两个值决定，但是并不等于这两个值，是有一个比例关系的，距离机器人越远，限定范围就越大，这其中考虑了坡度
+    maxRelZ: 0.8
+    disRatioZ: 0.35                     # V3: allow ~15deg ramp surfaces without classifying them as blocked terrain
 
 terrain_analysis_ext:
   ros__parameters:
@@ -147,8 +147,8 @@ terrain_analysis_ext:
     voxelPointUpdateThre: 100
     voxelTimeUpdateThre: 2.0
     lowerBoundZ: -1.5
-    upperBoundZ: 0.5
-    disRatioZ: 0.2
+    upperBoundZ: 0.8
+    disRatioZ: 0.35
     checkTerrainConn: False
     terrainUnderVehicle: -0.75
     terrainConnThre: 0.5
@@ -341,7 +341,7 @@ controller_server:
     odom_topic: odometry
     controller_frequency: 20.0
     min_x_velocity_threshold: 0.001
-    min_y_velocity_threshold: 0.5
+    min_y_velocity_threshold: 0.001
     min_theta_velocity_threshold: 0.001
     failure_tolerance: 0.3
     progress_checker_plugins: ["progress_checker"]
@@ -354,7 +354,7 @@ controller_server:
     general_goal_checker:
       stateful: True
       plugin: "nav2_controller::SimpleGoalChecker"
-      xy_goal_tolerance: 0.3
+      xy_goal_tolerance: 0.5
       yaw_goal_tolerance: 6.28
     FollowPath:
       plugin: "pb_omni_pid_pursuit_controller::OmniPidPursuitController"
@@ -415,7 +415,7 @@ local_costmap:
         unknown_threshold: 5
         z_resolution: 0.05
         z_voxels: 16
-        min_obstacle_height: 0.0
+        min_obstacle_height: 0.08
         max_obstacle_height: 2.0
         min_obstacle_intensity: 0.1
         max_obstacle_intensity: 2.0
@@ -424,7 +424,7 @@ local_costmap:
           data_type: PointCloud2
           topic: terrain_map
           sensor_frame: front_mid360
-          min_obstacle_height: 0.0
+          min_obstacle_height: 0.08
           max_obstacle_height: 2.0
           obstacle_max_range: 5.0
           obstacle_min_range: 0.2
@@ -434,7 +434,7 @@ local_costmap:
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer"
         cost_scaling_factor: 4.0
-        inflation_radius: 0.45
+        inflation_radius: 0.38
       always_send_full_costmap: False
 
 global_costmap:
@@ -462,7 +462,7 @@ global_costmap:
         unknown_threshold: 5
         z_resolution: 0.05
         z_voxels: 16
-        min_obstacle_height: 0.0
+        min_obstacle_height: 0.08
         max_obstacle_height: 2.0
         min_obstacle_intensity: 0.1
         max_obstacle_intensity: 2.0
@@ -471,7 +471,7 @@ global_costmap:
           data_type: PointCloud2
           topic: terrain_map_ext
           sensor_frame: front_mid360
-          min_obstacle_height: 0.0
+          min_obstacle_height: 0.08
           max_obstacle_height: 2.0
           obstacle_max_range: 10.0
           obstacle_min_range: 0.2
@@ -481,7 +481,7 @@ global_costmap:
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer"
         cost_scaling_factor: 4.0
-        inflation_radius: 0.45
+        inflation_radius: 0.38
       always_send_full_costmap: False
 
 # The yaml_filename does not need to be specified since it going to be set by defaults in launch.

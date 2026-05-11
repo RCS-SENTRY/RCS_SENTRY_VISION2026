@@ -78,10 +78,11 @@ std::optional<ArmorObservation> CsuArmorTracker::select(
     }
   }
 
-  if (best_same_id &&
-      min_position_diff < params_.max_match_distance &&
-      min_yaw_diff < params_.max_match_yaw_diff)
-  {
+  if (best_same_id) {
+    // V3 runs the tracker in the current gimbal frame. During a fast yaw/pitch
+    // correction a stationary armor can move noticeably in this frame, so a
+    // hard gate here causes target switching or TEMP_LOST flicker. Keep the
+    // same robot id sticky; update() will decide whether to snap or EKF update.
     return *best_same_id;
   }
 
@@ -100,6 +101,7 @@ AimTarget CsuArmorTracker::update(
 
   predictInPlace(stamp_sec);
 
+  const int prior_tracking_frames = tracking_frames_;
   const Eigen::Vector3d predicted_position = armorPositionFromState(x_);
   const double position_diff = (predicted_position - observation.position_gimbal).norm();
   const double yaw_diff = std::abs(shortestAngularDistance(x_(6), observation.yaw));
@@ -113,6 +115,18 @@ AimTarget CsuArmorTracker::update(
     handleArmorJump(observation);
     const Eigen::Vector3d inferred_position = armorPositionFromState(x_);
     matched = (inferred_position - observation.position_gimbal).norm() < params_.max_match_distance * 1.5;
+    if (!matched && observation.class_id == tracked_id_ && observation.valid) {
+      // Same-id observations are still useful even when the current-frame EKF
+      // prediction lags behind cloud/gimbal motion. Snap to the observed
+      // shootable armor point instead of declaring TEMP_LOST for one frame.
+      init(observation, stamp_sec);
+      tracker_state_ = CsuTrackerState::TRACKING;
+      tracking_frames_ = std::max(
+        prior_tracking_frames, params_.min_tracking_count_for_fire);
+      matched = true;
+    } else if (matched) {
+      updateEkf(observation);
+    }
   }
 
   x_(8) = std::clamp(std::abs(x_(8)), params_.min_radius, params_.max_radius);

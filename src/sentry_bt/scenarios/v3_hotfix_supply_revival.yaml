@@ -1,0 +1,71 @@
+defaults:
+  match_started: true
+  referee_link_fresh: true
+  sim_input_fresh: true
+  hp: 400
+  hp_max: 400
+  ammo_17: 200
+  heat: 0
+  heat_limit: 260
+  gold: 400
+  team_17mm_exchange_remain: 1000
+  is_disengaged: true
+  supercap_soc: 0.5
+  current_posture: MOVE
+  reported_posture: MOVE
+  desired_goal: SAFE_HOLD
+  desired_posture: MOVE
+  now_ms: 100000
+
+cases:
+  - name: dead_robot_returns_base_home_instead_of_wait_revive
+    context:
+      hp: 0
+      is_dead: true
+      can_buy_immediate_revive: true
+      immediate_revive_cost: 80
+    expected:
+      tactical_state: RETREAT
+      desired_goal: BASE_HOME
+      desired_posture: MOVE
+      fire_policy: HOLD_FIRE
+      spin_mode: OFF
+      revive_cmd: 2
+      is_dead: true
+
+  - name: low_hp_enters_resupply_not_safe_retreat
+    context:
+      hp: 100
+      hp_max: 400
+      enemy_in_view: true
+      enemy_confidence: 0.90
+      enemy_distance_m: 4.0
+    expected:
+      tactical_state: RESUPPLY
+      desired_goal: SUPPLY_LEFT
+      desired_posture: MOVE
+      fire_policy: CONSERVATIVE
+
+  - name: base_rfid_holds_recovery_point_for_resupply
+    context:
+      hp: 100
+      hp_max: 400
+      on_base: true
+      ammo_17: 60
+    expected:
+      tactical_state: RESUPPLY
+      desired_goal: BASE_HOME
+      desired_posture: MOVE
+      fire_policy: HOLD_FIRE
+      on_base: true
+
+  - name: reached_search_goal_dwells_before_switching
+    context:
+      nav_goal_reached: true
+      current_goal_id: 14
+      on_highground: false
+      supercap_soc: 0.5
+    expected:
+      desired_goal: SEARCH_AREA_A
+      desired_posture: MOVE
+      fire_policy: CONSERVATIVE

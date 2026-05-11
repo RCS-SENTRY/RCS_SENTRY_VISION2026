@@ -245,16 +245,20 @@ command_mux 输出最终 /gimbal_cmd
 
 适合完整哨兵逻辑：
 
-1. 低血 -> 回安全点/回家。
-2. 低弹 -> 去补给点。
+1. 低血/低弹 -> 进入补给闭环，按 `SUPPLY_LEFT -> SUPPLY_RIGHT -> BASE_HOME` 候选点寻找 RFID 恢复区。
+2. 到达补给候选点后必须用 RFID 确认，`on_supply` 或 `on_base` 成立后才停留等待恢复。
 3. 有敌人且状态健康 -> `ENGAGE`。
 4. 热量危险 -> 保守/停火。
-5. 到点 -> 切姿态。
-6. 死亡 -> `WAIT_REVIVE`。
+5. 巡航/搜索到点 -> dwell 等待一小段时间，再允许切换下一个巡航目标。
+6. 死亡且裁判链路新鲜 -> 硬导航到 `BASE_HOME`，停火、关小陀螺，等待 RFID 和回血；`WAIT_REVIVE` 只作为不可移动时的状态语义。
 
-启动：
+比赛全功能启动命令。队友比赛时优先使用这一条：
 
 ```bash
+cd /home/rm/Desktop/SENTRY_FULL/XMU_RCS_SENTRY
+source /opt/ros/humble/setup.bash
+source install/setup.bash
+
 ros2 launch rm_bringup sentry_bringup.launch.py \
   use_serial:=true \
   serial_device:=/dev/rm_serial \
@@ -266,16 +270,60 @@ ros2 launch rm_bringup sentry_bringup.launch.py \
   enable_sentry_command_mux:=true \
   enable_sentry_goal_executor:=true \
   enable_sentry_mission_runner:=false \
+  enable_second_lidar_safety:=true \
   slam:=False \
   map:=/home/rm/Desktop/SENTRY_FULL/maps/new_map.yaml \
+  prior_pcd_file:=/home/rm/Desktop/SENTRY_FULL/maps/new_scans.pcd \
   use_rviz:=false
 ```
 
 注意：
 
 1. `sentry_bt` 和 `mission_runner` 不能同时发布 `/sentry/intent`。
-2. 比赛全自动用 `sentry_bt`。
-3. 平时固定脚本测试用 `mission_runner`。
+2. 比赛全自动用 `sentry_bt`，因此 `enable_sentry_decision:=true` 且 `enable_sentry_mission_runner:=false`。
+3. 平时固定脚本测试点位、姿态、到点流程时才用 `mission_runner`。
+4. 这条命令会启动双雷达 safety 链；第二雷达只做速度安全壳，不进入主导航 costmap。
+5. 机器人端比赛默认不开 RViz，需要现场看图时临时把 `use_rviz:=true`。
+6. `enable_small_gicp` 的 launch 默认值已经是 `false`，比赛命令里不重复写。
+7. 目标颜色/敌我识别沿用裁判系统与视觉配置，不在比赛命令里硬编码。
+8. 某个普通导航目标 active 超过 `10s` 且未进入战术到点范围时，会标记 stuck/failed 并切换备用点；`BASE_HOME` 作为死亡回家硬任务不被 active timeout 切走。
+
+补给/死亡回家相关默认参数在 `sentry_bt.launch.py` 中：
+
+```text
+hp_resupply_enter_ratio=0.35
+hp_resupply_exit_ratio=0.60
+ammo_resupply_enter_count=80
+ammo_resupply_exit_count=120
+resupply_rfid_confirm_hold_ms=300
+resupply_goal_timeout_ms=12000
+resupply_wait_recovery_timeout_ms=12000
+dead_return_home_enabled=true
+dead_return_goal=BASE_HOME
+dead_full_hp_exit_ratio=0.98
+goal_dwell_search_ms=2500
+goal_dwell_hold_ms=3000
+```
+
+实车验收重点：
+
+```bash
+ros2 topic echo /gimbal_status
+ros2 topic echo /sentry_bt/debug
+ros2 topic echo /sentry/intent
+ros2 topic echo /sentry/nav_status
+ros2 topic echo /sentry/nav_goal_debug
+```
+
+`/sentry_bt/debug.executor_summary` 会拼出：
+
+```text
+need_supply, hp_recovery_active, ammo_recovery_active
+on_base, on_supply, rfid_status, recovery_buff
+resupply_goal_current, resupply_rfid_confirmed, resupply_waiting_recovery
+dead_return_home_active, dead_home_rfid_confirmed, dead_waiting_full_hp
+dwell_active, dwell_complete, dwell_remaining_ms
+```
 
 ## 7. 到点判定说明
 
@@ -288,6 +336,25 @@ Nav2 可能已经到目标附近，但仍然 `active`，导致车在目标附近
 解决方式：
 
 `sentry_goal_executor` 自己根据 `map` 坐标判断 tactical reach。默认到目标 `0.45m` 内保持 `0.30s` 后认为战术到点，然后发布 `/sentry/nav_status.reached=true`。必要时 cancel Nav2 goal，让车停止继续追路径。
+
+`sentry_goals.yaml` 支持给单个 goal 配置区域半径和候选点：
+
+```yaml
+SUPPLY_LEFT:
+  id: 5
+  x: 0.0
+  y: 0.0
+  yaw: 0.0
+  radius: 0.8
+  candidates:
+    - [0.0, 0.0, 0.0]
+    - [0.5, 0.0, 0.0]
+    - [0.0, 0.5, 0.0]
+    - [-0.5, 0.0, 0.0]
+    - [0.0, -0.5, 0.0]
+```
+
+`candidates` 的每一项是 `[x, y, yaw]`，单位分别是 `m, m, rad`。执行器会从候选点中选一个离当前机器人最近的点发给 Nav2；到达判定使用该 goal 的 `radius`。这可以把“兑换点/巡航点”定义成一个区域，而不是唯一一点。
 
 所以决策层看：
 
@@ -472,7 +539,7 @@ fire_policy 不是 HOLD_FIRE
 gimbal_status 中弹量、热量、发射供电正常
 ```
 
-Q3：为什么低血没有回家？
+Q3：为什么低血没有去补给/回家？
 
 检查：
 
@@ -486,10 +553,16 @@ ros2 topic echo /sentry/intent
 
 ```text
 current_hp 是否真实
-tactical_state 是否变成 RETREAT
-goal_id 是否变成 BASE_HOME / SAFE_RETREAT_A
+tactical_state 是否变成 RESUPPLY
+goal_id 是否变成 SUPPLY_LEFT / SUPPLY_RIGHT / BASE_HOME
+rfid_status 是否命中 on_supply/on_base
+resupply_waiting_recovery 是否为 true
 sentry_goals.yaml 坐标是否正确
 ```
+
+Q3.1：为什么死亡后不是 WAIT_REVIVE？
+
+这是当前赛场热修的预期行为：死亡且 `match_started=true`、`referee_link_fresh=true` 时，默认认为底盘在冷却后可移动，`/sentry/intent.goal_id` 会强制输出 `BASE_HOME` 对应 id。复活确认命令仍然由 revive 分支并行输出；`WAIT_REVIVE` 不再承担“导航回基地”的语义。
 
 Q4：为什么补血/补弹没有真正生效？
 
@@ -613,7 +686,7 @@ ros2 launch rm_bringup sentry_bringup.launch.py \
   baudrate:=460800 \
   enable_navigation:=true \
   slam:=False \
-  map:=/home/rm/Desktop/SENTRY_FULL/maps/self_filtered_map.yaml \
+  map:=/home/rm/Desktop/SENTRY_FULL/maps/new_map.yaml \
   enable_small_gicp:=false \
   enable_second_lidar_safety:=false \
   use_rviz:=false
@@ -627,7 +700,7 @@ ros2 launch rm_bringup sentry_bringup.launch.py \
   debug_no_serial:=true \
   enable_navigation:=true \
   slam:=False \
-  map:=/home/rm/Desktop/SENTRY_FULL/maps/self_filtered_map.yaml \
+  map:=/home/rm/Desktop/SENTRY_FULL/maps/new_map.yaml \
   use_rviz:=true
 ```
 
@@ -641,7 +714,7 @@ ros2 launch rm_bringup sentry_bringup.launch.py \
   baudrate:=460800 \
   enable_navigation:=true \
   slam:=False \
-  map:=/home/rm/Desktop/SENTRY_FULL/maps/self_filtered_map.yaml \
+  map:=/home/rm/Desktop/SENTRY_FULL/maps/new_map.yaml \
   enable_small_gicp:=false \
   enable_second_lidar_safety:=true \
   use_rviz:=false
@@ -721,7 +794,7 @@ ros2 launch rm_bringup sentry_bringup.launch.py \
   navigation_only:=false \
   vision_only:=false \
   slam:=False \
-  map:=/home/rm/Desktop/SENTRY_FULL/maps/self_filtered_map.yaml \
+  map:=/home/rm/Desktop/SENTRY_FULL/maps/new_map.yaml \
   enable_small_gicp:=false \
   enable_second_lidar_safety:=false \
   use_rviz:=false
@@ -744,7 +817,7 @@ ros2 launch rm_bringup sentry_bringup.launch.py \
   navigation_only:=false \
   vision_only:=false \
   slam:=False \
-  map:=/home/rm/Desktop/SENTRY_FULL/maps/self_filtered_map.yaml \
+  map:=/home/rm/Desktop/SENTRY_FULL/maps/new_map.yaml \
   enable_small_gicp:=false \
   enable_second_lidar_safety:=false \
   use_rviz:=false
@@ -769,7 +842,7 @@ ros2 launch rm_bringup sentry_bringup.launch.py \
   enable_navigation:=true \
   enable_vision:=true \
   slam:=False \
-  map:=/home/rm/Desktop/SENTRY_FULL/maps/self_filtered_map.yaml \
+  map:=/home/rm/Desktop/SENTRY_FULL/maps/new_map.yaml \
   enable_second_lidar_safety:=true \
   use_rviz:=false
 ```
@@ -865,7 +938,7 @@ ros2 launch rm_bringup sentry_bringup.launch.py \
   debug_no_serial:=true \
   enable_navigation:=true \
   slam:=False \
-  map:=/home/rm/Desktop/SENTRY_FULL/maps/self_filtered_map.yaml \
+  map:=/home/rm/Desktop/SENTRY_FULL/maps/new_map.yaml \
   use_rviz:=true
 ```
 
@@ -894,7 +967,7 @@ ros2 launch rm_bringup sentry_bringup.launch.py \
 
 ```bash
 USE_RVIZ=true ./tools/start_dual_lidar_full_tmux.sh
-MAP=/home/rm/Desktop/SENTRY_FULL/maps/self_filtered_map.yaml ./tools/start_dual_lidar_full_tmux.sh
+MAP=/home/rm/Desktop/SENTRY_FULL/maps/new_map.yaml ./tools/start_dual_lidar_full_tmux.sh
 SERIAL_DEVICE=/dev/rm_serial ./tools/start_dual_lidar_full_tmux.sh
 BRINGUP_ARGS='use_rviz:=true log_level:=debug' ./tools/start_dual_lidar_full_tmux.sh
 ```
@@ -929,13 +1002,14 @@ RViz 中显示点云时，选择 `sensor_msgs/msg/PointCloud2` topic，例如：
 | `enable_vision` | `true` | 启动相机、识别、自瞄链路 |
 | `enable_sentry_command_mux` | `false` | 启动后由 command_mux 发布最终 `/gimbal_cmd`，自瞄输出 remap 到 `/autoaim/gimbal_cmd_raw` |
 | `enable_sentry_decision` | `false` | 启动 `sentry_bt` 意图层，通常和 command_mux 一起联调 |
+| `sentry_goal_active_timeout_sec` | `10.0` | 单个决策目标 active 超时后标记 stuck/failed，让 BT 切换备用点 |
 | `enable_small_gicp` | `false` | 默认关闭 PB small_gicp 重定位 |
 | `enable_second_lidar_safety` | `false` | 可选第二雷达速度安全壳，不改变主导航链 |
 | `target_color` | `red` | 检测器目标颜色，可启动时覆盖为 `blue` 或 `all` |
 | `use_rviz` | `false` | 默认机器人端不开 RViz |
 | `slam` | `False` | `False` 使用已有地图，`True` 进入 PB SLAM 模式 |
-| `map` | `/home/rm/Desktop/SENTRY_FULL/maps/self_filtered_map.yaml` | Nav2 栅格地图 |
-| `prior_pcd_file` | `/home/rm/Desktop/SENTRY_FULL/maps/self_filtered_scans.pcd` | 可选 PCD 先验 |
+| `map` | `/home/rm/Desktop/SENTRY_FULL/maps/new_map.yaml` | Nav2 栅格地图 |
+| `prior_pcd_file` | `/home/rm/Desktop/SENTRY_FULL/maps/new_scans.pcd` | 可选 PCD 先验 |
 
 XMU MID-360 外参默认值：
 

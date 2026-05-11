@@ -2,6 +2,7 @@
 #include <memory>
 #include <sstream>
 #include <string>
+#include <vector>
 
 #include <rclcpp/rclcpp.hpp>
 
@@ -182,6 +183,53 @@ public:
             this->declare_parameter<std::string>("btlog_path", "/tmp/sentry_bt.btlog");
         const bool enable_groot_zmq =
             this->declare_parameter<bool>("enable_groot_zmq", false);
+        ctx_->hp_resupply_enter_ratio = static_cast<float>(
+            this->declare_parameter<double>("hp_resupply_enter_ratio", 0.35));
+        ctx_->hp_resupply_exit_ratio = static_cast<float>(
+            this->declare_parameter<double>("hp_resupply_exit_ratio", 0.60));
+        ctx_->ammo_resupply_enter_count =
+            this->declare_parameter<int>("ammo_resupply_enter_count", 80);
+        ctx_->ammo_resupply_exit_count =
+            this->declare_parameter<int>("ammo_resupply_exit_count", 120);
+        ctx_->resupply_rfid_confirm_hold_ms = static_cast<std::uint64_t>(
+            std::max<int>(0, this->declare_parameter<int>(
+                                 "resupply_rfid_confirm_hold_ms", 300)));
+        ctx_->resupply_goal_timeout_ms = static_cast<std::uint64_t>(
+            std::max<int>(0, this->declare_parameter<int>("resupply_goal_timeout_ms", 12000)));
+        ctx_->resupply_wait_recovery_timeout_ms = static_cast<std::uint64_t>(
+            std::max<int>(0, this->declare_parameter<int>(
+                                 "resupply_wait_recovery_timeout_ms", 12000)));
+        ctx_->resupply_candidate_switch_cooldown_ms = static_cast<std::uint64_t>(
+            std::max<int>(0, this->declare_parameter<int>(
+                                 "resupply_candidate_switch_cooldown_ms", 1500)));
+        ctx_->resupply_candidates = this->declare_parameter<std::vector<std::string>>(
+            "resupply_candidates", std::vector<std::string>{
+                                       "SUPPLY_LEFT", "SUPPLY_RIGHT", "BASE_HOME"});
+        if (!ctx_->resupply_candidates.empty())
+        {
+            ctx_->resupply_goal_current = ctx_->resupply_candidates.front();
+        }
+        ctx_->dead_return_home_enabled =
+            this->declare_parameter<bool>("dead_return_home_enabled", true);
+        ctx_->dead_return_goal =
+            this->declare_parameter<std::string>("dead_return_goal", "BASE_HOME");
+        ctx_->dead_return_rfid_confirm_hold_ms = static_cast<std::uint64_t>(
+            std::max<int>(0, this->declare_parameter<int>(
+                                 "dead_return_rfid_confirm_hold_ms", 300)));
+        ctx_->dead_full_hp_exit_ratio = static_cast<float>(
+            this->declare_parameter<double>("dead_full_hp_exit_ratio", 0.98));
+        ctx_->dead_return_no_timeout =
+            this->declare_parameter<bool>("dead_return_no_timeout", true);
+        ctx_->goal_dwell_default_ms = static_cast<std::uint64_t>(
+            std::max<int>(0, this->declare_parameter<int>("goal_dwell_default_ms", 1500)));
+        ctx_->goal_dwell_search_ms = static_cast<std::uint64_t>(
+            std::max<int>(0, this->declare_parameter<int>("goal_dwell_search_ms", 2500)));
+        ctx_->goal_dwell_hold_ms = static_cast<std::uint64_t>(
+            std::max<int>(0, this->declare_parameter<int>("goal_dwell_hold_ms", 3000)));
+        ctx_->goal_dwell_resupply_ms = static_cast<std::uint64_t>(
+            std::max<int>(0, this->declare_parameter<int>("goal_dwell_resupply_ms", 0)));
+        ctx_->goal_dwell_engage_ms = static_cast<std::uint64_t>(
+            std::max<int>(0, this->declare_parameter<int>("goal_dwell_engage_ms", 0)));
 
         referee_.ConfigurePostureTiming(
             posture_switch_cooldown_ms, posture_feedback_stable_ms);

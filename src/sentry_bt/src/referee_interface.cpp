@@ -12,6 +12,8 @@ constexpr float kEnemyConfidenceExit = 0.45f;
 constexpr float kEnemyFilterAlpha = 0.35f;
 constexpr float kDefaultEnemyDistanceM = 12.0f;
 constexpr int kDefaultSentryHpMax = 400;
+constexpr int kOpeningAmmoFallbackRemainTimeSec = 415;
+constexpr int kDefaultOpeningAmmo17 = 200;
 
 bool HasBit(std::uint32_t value, unsigned bit)
 {
@@ -63,6 +65,8 @@ struct MergedSnapshot
     bool on_fortress{false};
     bool on_outpost{false};
     bool on_highground{false};
+    std::uint32_t rfid_status{0};
+    std::uint8_t recovery_buff{0};
     Posture reported_posture{Posture::MOVE};
     Posture current_posture{Posture::MOVE};
     Posture pending_posture_target{Posture::MOVE};
@@ -321,7 +325,16 @@ void RefereeInterface::SyncToContext(RobotContext& ctx)
     snapshot.heat = static_cast<int>(latest_status_.shooter_17mm_1_barrel_heat);
     snapshot.heat_limit = std::max(1, static_cast<int>(latest_status_.shooter_barrel_heat_limit));
     snapshot.cooling = static_cast<int>(latest_status_.shooter_barrel_cooling_value);
-    snapshot.ammo_17 = static_cast<int>(latest_status_.projectile_allowance_17mm);
+    const int raw_ammo_17 = static_cast<int>(latest_status_.projectile_allowance_17mm);
+    snapshot.ammo_17 = raw_ammo_17;
+    if (snapshot.match_started && raw_ammo_17 == 0 &&
+        snapshot.stage_remain_time >= kOpeningAmmoFallbackRemainTimeSec)
+    {
+        snapshot.ammo_17 = kDefaultOpeningAmmo17;
+        snapshot.health_data_degraded = true;
+        snapshot.health_data_reason +=
+            " 开局 5 秒内允许发弹量为 0，按规则初始 200 发兜底，避免误触发兑弹。";
+    }
     snapshot.gold = static_cast<int>(latest_status_.remaining_gold_coin);
     snapshot.exchanged_projectile_allowance =
         static_cast<int>(latest_status_.exchanged_projectile_allowance);
@@ -395,6 +408,8 @@ void RefereeInterface::SyncToContext(RobotContext& ctx)
     else
     {
         const std::uint32_t rfid = latest_status_.rfid_status;
+        snapshot.rfid_status = rfid;
+        snapshot.recovery_buff = latest_status_.recovery_buff;
         snapshot.on_base = HasBit(rfid, 0);
         snapshot.on_supply = HasBit(rfid, 19) || HasBit(rfid, 20);
         snapshot.on_fortress = HasBit(rfid, 17);
@@ -636,6 +651,8 @@ void RefereeInterface::SyncToContext(RobotContext& ctx)
     ctx.on_fortress = snapshot.on_fortress;
     ctx.on_outpost = snapshot.on_outpost;
     ctx.on_highground = snapshot.on_highground;
+    ctx.rfid_status = snapshot.rfid_status;
+    ctx.recovery_buff = snapshot.recovery_buff;
     ctx.reported_posture = snapshot.reported_posture;
     ctx.current_posture = snapshot.current_posture;
     ctx.pending_posture_target = snapshot.pending_posture_target;

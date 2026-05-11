@@ -118,6 +118,9 @@ struct RobotContext
     bool on_fortress{false};
     bool on_outpost{false};
     bool on_highground{false};
+    bool at_valid_recovery_rfid{false};
+    std::uint32_t rfid_status{0};
+    std::uint8_t recovery_buff{0};
     Posture reported_posture{Posture::MOVE};
     Posture current_posture{Posture::MOVE};
     Posture pending_posture_target{Posture::MOVE};
@@ -145,6 +148,9 @@ struct RobotContext
     // UpdateBlackboard 和各类 Guard 节点都可以在每个 tick 内重算这些值。
     bool ammo_low{false};
     bool need_supply{false};
+    bool hp_recovery_active{false};
+    bool ammo_recovery_active{false};
+    bool resupply_active{false};
     bool need_emergency_safety{false};
     bool need_rule_action{false};
     bool can_activate_energy_mechanism{false};
@@ -213,6 +219,57 @@ struct RobotContext
     std::uint64_t last_posture_command_ms{0};
     std::uint64_t last_energy_activate_ms{0};
     std::uint64_t last_periodic_ammo_claim_ms{0};
+
+    // 死亡后回基地补满血硬任务。WAIT_REVIVE 只表达复活状态，不再作为导航点使用。
+    bool dead_return_home_enabled{true};
+    bool dead_return_no_timeout{true};
+    bool dead_chassis_can_move{false};
+    bool dead_return_home_active{false};
+    bool dead_home_rfid_confirmed{false};
+    bool dead_waiting_full_hp{false};
+    std::uint64_t dead_return_start_ms{0};
+    std::uint64_t dead_home_rfid_confirm_ms{0};
+    std::string dead_return_goal{"BASE_HOME"};
+    std::string dead_return_reason{};
+    std::uint64_t dead_return_rfid_confirm_hold_ms{300};
+    float dead_full_hp_exit_ratio{0.98f};
+
+    // 普通低血/低弹补给闭环。
+    std::uint64_t resupply_enter_ms{0};
+    std::uint64_t resupply_reached_ms{0};
+    std::uint64_t resupply_rfid_confirm_ms{0};
+    std::uint64_t resupply_last_candidate_switch_ms{0};
+    std::uint64_t resupply_goal_start_ms{0};
+    std::string resupply_goal_current{"SUPPLY_LEFT"};
+    int resupply_candidate_index{0};
+    bool resupply_rfid_confirmed{false};
+    bool resupply_waiting_recovery{false};
+    std::string resupply_reason{};
+    float hp_resupply_enter_ratio{0.35f};
+    float hp_resupply_exit_ratio{0.60f};
+    int ammo_resupply_enter_count{80};
+    int ammo_resupply_exit_count{120};
+    std::uint64_t resupply_rfid_confirm_hold_ms{300};
+    std::uint64_t resupply_goal_timeout_ms{12000};
+    std::uint64_t resupply_wait_recovery_timeout_ms{12000};
+    std::uint64_t resupply_candidate_switch_cooldown_ms{1500};
+    std::vector<std::string> resupply_candidates{"SUPPLY_LEFT", "SUPPLY_RIGHT", "BASE_HOME"};
+
+    // sentry_bt 全自动巡航/到点 dwell。补给、交战、撤退和死亡硬任务不受 dwell 约束。
+    std::uint8_t dwell_goal_id{0};
+    std::uint8_t last_seen_nav_goal_id{0};
+    bool last_nav_goal_reached{false};
+    std::uint64_t dwell_start_ms{0};
+    bool dwell_active{false};
+    bool dwell_complete{false};
+    std::uint64_t dwell_required_ms{0};
+    std::uint64_t dwell_remaining_ms{0};
+    std::string dwell_reason{};
+    std::uint64_t goal_dwell_default_ms{1500};
+    std::uint64_t goal_dwell_search_ms{2500};
+    std::uint64_t goal_dwell_hold_ms{3000};
+    std::uint64_t goal_dwell_resupply_ms{0};
+    std::uint64_t goal_dwell_engage_ms{0};
 
     // 姿态累计与衰减信息。
     // 规则要求“单姿态累计超过 3 分钟后收益下降”，

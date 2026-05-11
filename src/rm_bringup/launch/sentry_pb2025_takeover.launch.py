@@ -125,8 +125,8 @@ def generate_launch_description():
 
         DeclareLaunchArgument("namespace", default_value=""),
         DeclareLaunchArgument("slam", default_value="False"),
-        DeclareLaunchArgument("map", default_value="/home/rm/Desktop/SENTRY_FULL/maps/self_filtered_map.yaml"),
-        DeclareLaunchArgument("prior_pcd_file", default_value="/home/rm/Desktop/SENTRY_FULL/maps/self_filtered_scans.pcd"),
+        DeclareLaunchArgument("map", default_value="/home/rm/Desktop/SENTRY_FULL/maps/new_map.yaml"),
+        DeclareLaunchArgument("prior_pcd_file", default_value="/home/rm/Desktop/SENTRY_FULL/maps/new_scans.pcd"),
         DeclareLaunchArgument("use_sim_time", default_value="false"),
         DeclareLaunchArgument(
             "params_file",

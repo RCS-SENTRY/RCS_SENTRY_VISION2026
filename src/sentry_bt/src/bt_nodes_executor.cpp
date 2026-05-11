@@ -50,6 +50,71 @@ std::string DefaultGoalForState(TacticalState state)
     return "SAFE_HOLD";
 }
 
+std::string GoalNameFromProtocolId(std::uint8_t goal_id)
+{
+    switch (goal_id)
+    {
+        case SENTRY_GOAL_ID_SAFE_HOLD:
+            return "SAFE_HOLD";
+        case SENTRY_GOAL_ID_WAIT_REVIVE:
+            return "WAIT_REVIVE";
+        case SENTRY_GOAL_ID_SAFE_RETREAT_A:
+            return "SAFE_RETREAT_A";
+        case SENTRY_GOAL_ID_SAFE_RETREAT_B:
+            return "SAFE_RETREAT_B";
+        case SENTRY_GOAL_ID_SUPPLY_LEFT:
+            return "SUPPLY_LEFT";
+        case SENTRY_GOAL_ID_SUPPLY_RIGHT:
+            return "SUPPLY_RIGHT";
+        case SENTRY_GOAL_ID_FORTRESS_HOLD:
+            return "FORTRESS_HOLD";
+        case SENTRY_GOAL_ID_OUTPOST_HOLD:
+            return "OUTPOST_HOLD";
+        case SENTRY_GOAL_ID_COMBAT_KITE_A:
+            return "COMBAT_KITE_A";
+        case SENTRY_GOAL_ID_COMBAT_HOLD_A:
+            return "COMBAT_HOLD_A";
+        case SENTRY_GOAL_ID_MID_PRESSURE:
+            return "MID_PRESSURE";
+        case SENTRY_GOAL_ID_HIGHGROUND_PEEK:
+            return "HIGHGROUND_PEEK";
+        case SENTRY_GOAL_ID_COMBAT_PUSH_A:
+            return "COMBAT_PUSH_A";
+        case SENTRY_GOAL_ID_SEARCH_AREA_A:
+            return "SEARCH_AREA_A";
+        case SENTRY_GOAL_ID_SEARCH_AREA_B:
+            return "SEARCH_AREA_B";
+        case SENTRY_GOAL_ID_HIGHGROUND_SCAN:
+            return "HIGHGROUND_SCAN";
+        case SENTRY_GOAL_ID_HIGHGROUND_CENTER:
+            return "HIGHGROUND_CENTER";
+        case SENTRY_GOAL_ID_MID_CROSS:
+            return "MID_CROSS";
+        case SENTRY_GOAL_ID_BASE_HOME:
+            return "BASE_HOME";
+        case SENTRY_GOAL_ID_BASE_HOLD:
+            return "BASE_HOLD";
+        default:
+            return {};
+    }
+}
+
+bool DwellCanHoldGoal(const RobotContext& ctx)
+{
+    if (!ctx.dwell_active || ctx.dwell_complete || ctx.dwell_required_ms == 0)
+    {
+        return false;
+    }
+    if (!ctx.match_started || !ctx.referee_link_fresh || ctx.is_dead || ctx.need_emergency_safety ||
+        ctx.need_supply)
+    {
+        return false;
+    }
+    return ctx.tactical_state == TacticalState::HOLD ||
+           ctx.tactical_state == TacticalState::SEARCH ||
+           ctx.tactical_state == TacticalState::REPOSITION;
+}
+
 float BasePostureScore(const RobotContext& ctx, Posture posture)
 {
     const float hp_ratio = SafeRatio(ctx.hp, ctx.hp_max);
@@ -196,6 +261,13 @@ public:
     BT::NodeStatus tick() override
     {
         std::lock_guard<std::mutex> lock(ctx_->mtx);
+
+        if (ctx_->is_dead && ctx_->dead_return_home_active && ctx_->dead_chassis_can_move)
+        {
+            ctx_->desired_posture = Posture::MOVE;
+            ctx_->posture_reason = "死亡回基地硬任务启用，姿态强制 MOVE。";
+            return BT::NodeStatus::SUCCESS;
+        }
 
         if (ctx_->is_dead || !ctx_->referee_link_fresh || !ctx_->match_started)
         {
@@ -427,8 +499,59 @@ public:
         }
         else if (ctx_->is_dead)
         {
-            // 死亡时不再下发真实目标点，统一停留在等待复活状态。
-            ctx_->desired_goal = "WAIT_REVIVE";
+            if (ctx_->dead_return_home_enabled && ctx_->dead_chassis_can_move)
+            {
+                ctx_->desired_goal = ctx_->dead_return_goal.empty() ? "BASE_HOME"
+                                                                    : ctx_->dead_return_goal;
+                ctx_->desired_posture = Posture::MOVE;
+                ctx_->desired_fire_policy = FirePolicy::HOLD_FIRE;
+                ctx_->desired_spin_mode = SpinMode::OFF;
+                ctx_->dead_return_home_active = true;
+                if (ctx_->dead_return_start_ms == 0)
+                {
+                    ctx_->dead_return_start_ms = ctx_->now_ms;
+                }
+                if (ctx_->goal_reason.empty())
+                {
+                    ctx_->goal_reason = ctx_->dead_return_reason.empty()
+                                            ? "死亡回基地硬任务：导航到 BASE_HOME 等待回血。"
+                                            : ctx_->dead_return_reason;
+                }
+            }
+            else
+            {
+                // 只有在底盘不可动或裁判链路不可靠时，WAIT_REVIVE 才作为纯状态输出。
+                ctx_->desired_goal = "WAIT_REVIVE";
+            }
+        }
+        else if (ctx_->dead_return_home_active || ctx_->dead_waiting_full_hp)
+        {
+            ctx_->desired_goal = ctx_->dead_return_goal.empty() ? "BASE_HOME"
+                                                                : ctx_->dead_return_goal;
+            ctx_->desired_posture = Posture::MOVE;
+            ctx_->desired_fire_policy = FirePolicy::HOLD_FIRE;
+            ctx_->desired_spin_mode = SpinMode::OFF;
+            if (ctx_->goal_reason.empty())
+            {
+                ctx_->goal_reason =
+                    "死亡回基地任务已进入等待回血阶段，满血阈值前不允许恢复普通决策。";
+            }
+        }
+        else if (DwellCanHoldGoal(*ctx_))
+        {
+            const auto dwell_goal = GoalNameFromProtocolId(ctx_->dwell_goal_id);
+            if (!dwell_goal.empty())
+            {
+                ctx_->desired_goal = dwell_goal;
+                std::ostringstream dwell_reason;
+                dwell_reason << "到点 dwell 中，剩余 " << ctx_->dwell_remaining_ms
+                             << " ms，暂不切换巡航目标。";
+                ctx_->goal_reason = dwell_reason.str();
+            }
+            else if (!ctx_->preferred_goal.empty())
+            {
+                ctx_->desired_goal = ctx_->preferred_goal;
+            }
         }
         else if (!ctx_->preferred_goal.empty())
         {
@@ -442,6 +565,7 @@ public:
         }
 
         std::ostringstream oss;
+        const float hp_ratio = SafeRatio(ctx_->hp, ctx_->hp_max);
         oss << "goal=" << ctx_->desired_goal
             << ", posture=" << PostureToString(ctx_->desired_posture)
             << ", posture_reason=" << ctx_->posture_reason
@@ -460,6 +584,36 @@ public:
             << ", posture_cmd_referee=" << static_cast<int>(ctx_->posture_cmd_referee)
             << ", activate_energy=" << static_cast<int>(ctx_->activate_energy_confirm)
             << ", claim_periodic_ammo=" << static_cast<int>(ctx_->claim_periodic_ammo);
+        oss << ", is_dead=" << (ctx_->is_dead ? "true" : "false")
+            << ", dead_return_home_active="
+            << (ctx_->dead_return_home_active ? "true" : "false")
+            << ", dead_return_goal=" << ctx_->dead_return_goal
+            << ", dead_home_rfid_confirmed="
+            << (ctx_->dead_home_rfid_confirmed ? "true" : "false")
+            << ", dead_waiting_full_hp=" << (ctx_->dead_waiting_full_hp ? "true" : "false")
+            << ", hp=" << ctx_->hp
+            << ", hp_max=" << ctx_->hp_max
+            << ", hp_ratio=" << hp_ratio
+            << ", on_base=" << (ctx_->on_base ? "true" : "false")
+            << ", on_supply=" << (ctx_->on_supply ? "true" : "false")
+            << ", rfid_status=" << ctx_->rfid_status
+            << ", recovery_buff=" << static_cast<int>(ctx_->recovery_buff)
+            << ", at_valid_recovery_rfid="
+            << (ctx_->at_valid_recovery_rfid ? "true" : "false")
+            << ", need_supply=" << (ctx_->need_supply ? "true" : "false")
+            << ", hp_recovery_active=" << (ctx_->hp_recovery_active ? "true" : "false")
+            << ", ammo_recovery_active=" << (ctx_->ammo_recovery_active ? "true" : "false")
+            << ", resupply_goal_current=" << ctx_->resupply_goal_current
+            << ", resupply_rfid_confirmed="
+            << (ctx_->resupply_rfid_confirmed ? "true" : "false")
+            << ", resupply_waiting_recovery="
+            << (ctx_->resupply_waiting_recovery ? "true" : "false")
+            << ", resupply_reason=" << ctx_->resupply_reason
+            << ", dwell_active=" << (ctx_->dwell_active ? "true" : "false")
+            << ", dwell_complete=" << (ctx_->dwell_complete ? "true" : "false")
+            << ", dwell_required_ms=" << ctx_->dwell_required_ms
+            << ", dwell_remaining_ms=" << ctx_->dwell_remaining_ms
+            << ", dead_return_reason=" << ctx_->dead_return_reason;
         ctx_->executor_summary = oss.str();
 
         return BT::NodeStatus::SUCCESS;

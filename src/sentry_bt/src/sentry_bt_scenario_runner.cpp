@@ -153,6 +153,11 @@ void ApplyContextPatch(const YAML::Node& node, RobotContext& ctx)
     ReadScalar(node, "health_data_degraded", ctx.health_data_degraded);
     ReadScalar(node, "referee_status_age_ms", ctx.referee_status_age_ms);
     ReadScalar(node, "sim_input_age_ms", ctx.sim_input_age_ms);
+    ReadScalar(node, "nav_goal_active", ctx.nav_goal_active);
+    ReadScalar(node, "nav_goal_reached", ctx.nav_goal_reached);
+    ReadScalar(node, "nav_goal_failed", ctx.nav_goal_failed);
+    ReadScalar(node, "current_goal_id", ctx.current_goal_id);
+    ReadScalar(node, "nav_status_age_ms", ctx.nav_status_age_ms);
     ReadScalar(node, "can_activate_energy_mechanism", ctx.can_activate_energy_mechanism);
     ReadScalar(node, "can_claim_periodic_ammo", ctx.can_claim_periodic_ammo);
     ReadScalar(node, "posture_switch_requested", ctx.posture_switch_requested);

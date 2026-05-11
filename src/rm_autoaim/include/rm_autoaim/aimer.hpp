@@ -27,8 +27,10 @@ struct AimerParams
 
   double yaw_offset = 0.0;
   bool pitch_invert = false;
+  bool output_relative_command = false;
 
   double fire_tolerance = 0.03;
+  double dynamic_lead_scale = 0.75;
   bool use_dynamic_fire_window = true;
   double shooting_range_width = 0.135;
   double shooting_range_height = 0.055;
@@ -64,6 +66,7 @@ public:
     double pitch_window = 0.0;
     double manual_yaw_offset = 0.0;
     double manual_pitch_offset = 0.0;
+    bool output_relative_command = false;
   };
 
   AimResult solve(
@@ -74,11 +77,14 @@ public:
     double bullet_speed = 0.0,
     bool input_in_current_gimbal_frame = true,
     double manual_yaw_offset = 0.0,
-    double manual_pitch_offset = 0.0) const
+    double manual_pitch_offset = 0.0,
+    double dynamic_lead_scale = -1.0) const
   {
     AimResult result;
     result.manual_yaw_offset = manual_yaw_offset;
     result.manual_pitch_offset = manual_pitch_offset;
+    result.output_relative_command =
+      input_in_current_gimbal_frame && params_.output_relative_command;
     result.yaw_window = params_.fire_tolerance;
     result.pitch_window = params_.fire_tolerance;
 
@@ -93,10 +99,13 @@ public:
     const double current_pitch = current_pitch_deg * M_PI / 180.0;
 
     Eigen::Vector3d hit_pos = target.position_gimbal;
+    const double lead_scale = std::clamp(
+      dynamic_lead_scale >= 0.0 ? dynamic_lead_scale : params_.dynamic_lead_scale,
+      0.0, 2.0);
     double t_flight = hit_pos.norm() / std::max(1e-3, v_bullet);
     for (int i = 0; i < 3; ++i) {
       hit_pos = target.position_gimbal +
-        target.velocity_gimbal * (params_.fire_delay + t_flight);
+        target.velocity_gimbal * ((params_.fire_delay + t_flight) * lead_scale);
       t_flight = hit_pos.norm() / std::max(1e-3, v_bullet);
     }
     result.t_flight = t_flight;
@@ -110,10 +119,13 @@ public:
     const double compensated_pitch = frame_pitch + manual_pitch_offset;
     const double command_pitch = params_.pitch_invert ? -compensated_pitch : compensated_pitch;
 
-    if (input_in_current_gimbal_frame) {
-      result.target_yaw = std::atan2(
-        std::sin(current_yaw + command_yaw),
-        std::cos(current_yaw + command_yaw));
+    const bool relative_output = result.output_relative_command;
+
+    if (relative_output) {
+      result.target_yaw = std::atan2(std::sin(command_yaw), std::cos(command_yaw));
+      result.target_pitch = command_pitch;
+    } else if (input_in_current_gimbal_frame) {
+      result.target_yaw = current_yaw + command_yaw;
       result.target_pitch = current_pitch + command_pitch;
     } else {
       result.target_yaw = std::atan2(std::sin(command_yaw), std::cos(command_yaw));
@@ -132,10 +144,13 @@ public:
     result.yaw_window = windows.first;
     result.pitch_window = windows.second;
 
-    result.alignment_ready = checkAlignmentReady(
-      result.target_yaw, result.target_pitch,
-      current_yaw_deg, current_pitch_deg,
-      result.target_distance);
+    result.alignment_ready = relative_output ?
+      (std::abs(result.target_yaw) < result.yaw_window &&
+       std::abs(result.target_pitch) < result.pitch_window) :
+      checkAlignmentReady(
+        result.target_yaw, result.target_pitch,
+        current_yaw_deg, current_pitch_deg,
+        result.target_distance);
     result.tracker_ready =
       tracker_frames >= params_.fire_min_frames &&
       result.target_distance <= params_.fire_max_distance;

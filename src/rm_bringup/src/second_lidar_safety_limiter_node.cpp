@@ -48,20 +48,20 @@ public:
     obstacle_timeout_sec_ = declare_parameter<double>("obstacle_timeout_sec", 0.25);
 
     emergency_distance_ = declare_parameter<double>("emergency_distance", 0.35);
-    slow_distance_ = declare_parameter<double>("slow_distance", 0.70);
-    caution_distance_ = declare_parameter<double>("caution_distance", 1.20);
+    slow_distance_ = declare_parameter<double>("slow_distance", 0.50);
+    caution_distance_ = declare_parameter<double>("caution_distance", 0.85);
 
     front_angle_rad_ = degToRad(declare_parameter<double>("front_angle_deg", 50.0));
     side_angle_rad_ = degToRad(declare_parameter<double>("side_angle_deg", 70.0));
     rear_angle_rad_ = degToRad(declare_parameter<double>("rear_angle_deg", 50.0));
 
     max_speed_scale_in_caution_ =
-      declare_parameter<double>("max_speed_scale_in_caution", 0.6);
-    max_speed_scale_in_slow_ = declare_parameter<double>("max_speed_scale_in_slow", 0.25);
+      declare_parameter<double>("max_speed_scale_in_caution", 0.85);
+    max_speed_scale_in_slow_ = declare_parameter<double>("max_speed_scale_in_slow", 0.5);
 
     emergency_stop_ = declare_parameter<bool>("emergency_stop", true);
-    min_points_for_obstacle_ = declare_parameter<int>("min_points_for_obstacle", 5);
-    min_points_for_emergency_ = declare_parameter<int>("min_points_for_emergency", 3);
+    min_points_for_obstacle_ = declare_parameter<int>("min_points_for_obstacle", 8);
+    min_points_for_emergency_ = declare_parameter<int>("min_points_for_emergency", 4);
 
     front_.enabled = declare_parameter<bool>("enable_front_limit", true);
     back_.enabled = declare_parameter<bool>("enable_back_limit", true);
@@ -291,16 +291,16 @@ private:
   double cmd_vel_timeout_sec_{0.25};
   double obstacle_timeout_sec_{0.25};
   double emergency_distance_{0.35};
-  double slow_distance_{0.70};
-  double caution_distance_{1.20};
+  double slow_distance_{0.50};
+  double caution_distance_{0.85};
   double front_angle_rad_{degToRad(50.0)};
   double side_angle_rad_{degToRad(70.0)};
   double rear_angle_rad_{degToRad(50.0)};
-  double max_speed_scale_in_caution_{0.6};
-  double max_speed_scale_in_slow_{0.25};
+  double max_speed_scale_in_caution_{0.85};
+  double max_speed_scale_in_slow_{0.5};
   bool emergency_stop_{true};
-  int min_points_for_obstacle_{5};
-  int min_points_for_emergency_{3};
+  int min_points_for_obstacle_{8};
+  int min_points_for_emergency_{4};
   bool pass_through_when_no_cloud_{true};
 
   DirectionStats front_;

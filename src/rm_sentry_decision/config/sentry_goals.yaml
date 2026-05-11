@@ -14,24 +14,52 @@ goals:
     yaw: 0.0
   SAFE_RETREAT_A:
     id: 3
-    x: 0.5
-    y: 0.5
+    x: 0.0
+    y: 0.0
     yaw: 0.0
+    radius: 0.25
+    candidates:
+      - [0.0, 0.0, 0.0]
+      - [0.5, 0.0, 0.0]
+      - [0.0, 0.5, 0.0]
+      - [-0.5, 0.0, 0.0]
+      - [0.0, -0.5, 0.0]
   SAFE_RETREAT_B:
     id: 4
-    x: 0.5
-    y: -0.5
+    x: 0.0
+    y: 0.0
     yaw: 0.0
+    radius: 0.25
+    candidates:
+      - [0.0, 0.0, 0.0]
+      - [0.5, 0.0, 0.0]
+      - [0.0, 0.5, 0.0]
+      - [-0.5, 0.0, 0.0]
+      - [0.0, -0.5, 0.0]
   SUPPLY_LEFT:
     id: 5
-    x: 1.0
-    y: 1.0
+    x: 0.0
+    y: 0.0
     yaw: 0.0
+    radius: 0.25
+    candidates:
+      - [0.0, 0.0, 0.0]
+      - [0.5, 0.0, 0.0]
+      - [0.0, 0.5, 0.0]
+      - [-0.5, 0.0, 0.0]
+      - [0.0, -0.5, 0.0]
   SUPPLY_RIGHT:
     id: 6
-    x: 1.0
-    y: -1.0
+    x: 0.0
+    y: 0.0
     yaw: 0.0
+    radius: 0.25
+    candidates:
+      - [0.0, 0.0, 0.0]
+      - [0.5, 0.0, 0.0]
+      - [0.0, 0.5, 0.0]
+      - [-0.5, 0.0, 0.0]
+      - [0.0, -0.5, 0.0]
   FORTRESS_HOLD:
     id: 7
     x: 2.0
@@ -45,26 +73,26 @@ goals:
   COMBAT_KITE_A:
     id: 9
     x: 2.4
-    y: -0.7
+    y: 0.7
     yaw: 0.0
   COMBAT_HOLD_A:
     id: 10
-    x: 2.4
-    y: 0.0
+    x: 2.0
+    y: 1.0
     yaw: 0.0
   MID_PRESSURE:
     id: 11
-    x: 3.0
+    x: 2.0
     y: 0.0
     yaw: 0.0
   HIGHGROUND_PEEK:
     id: 12
-    x: 2.8
-    y: 1.2
+    x: 2.0
+    y: 1.0
     yaw: 0.0
   COMBAT_PUSH_A:
     id: 13
-    x: 3.4
+    x: 1.0
     y: 0.0
     yaw: 0.0
   SEARCH_AREA_A:
@@ -75,21 +103,21 @@ goals:
   SEARCH_AREA_B:
     id: 15
     x: 2.0
-    y: -1.5
+    y: 1.0
     yaw: 0.0
   HIGHGROUND_SCAN:
     id: 16
-    x: 2.5
+    x: 2.0
     y: 1.6
     yaw: 0.0
   HIGHGROUND_CENTER:
     id: 17
     x: 2.8
-    y: 1.4
+    y: 1.5
     yaw: 0.0
   MID_CROSS:
     id: 18
-    x: 3.2
+    x: 1.0
     y: 0.4
     yaw: 0.0
   BASE_HOME:
@@ -99,6 +127,13 @@ goals:
     yaw: 0.0
   BASE_HOLD:
     id: 20
-    x: 0.3
+    x: 0.0
     y: 0.0
     yaw: 0.0
+    radius: 0.8
+    candidates:
+      - [0.0, 0.0, 0.0]
+      - [0.5, 0.0, 0.0]
+      - [0.0, 0.5, 0.0]
+      - [-0.5, 0.0, 0.0]
+      - [0.0, -0.5, 0.0]

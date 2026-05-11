@@ -25,6 +25,58 @@ float AdviceBonus(const RobotContext& ctx, const std::string& goal_id)
     return 0.10f * ctx.llm_advice.confidence;
 }
 
+std::uint8_t GoalNameToProtocolId(const std::string& goal_id)
+{
+    if (goal_id == "SAFE_HOLD") return 1;
+    if (goal_id == "WAIT_REVIVE") return 2;
+    if (goal_id == "SAFE_RETREAT_A") return 3;
+    if (goal_id == "SAFE_RETREAT_B") return 4;
+    if (goal_id == "SUPPLY_LEFT") return 5;
+    if (goal_id == "SUPPLY_RIGHT") return 6;
+    if (goal_id == "FORTRESS_HOLD") return 7;
+    if (goal_id == "OUTPOST_HOLD") return 8;
+    if (goal_id == "COMBAT_KITE_A") return 9;
+    if (goal_id == "COMBAT_HOLD_A") return 10;
+    if (goal_id == "MID_PRESSURE") return 11;
+    if (goal_id == "HIGHGROUND_PEEK") return 12;
+    if (goal_id == "COMBAT_PUSH_A") return 13;
+    if (goal_id == "SEARCH_AREA_A") return 14;
+    if (goal_id == "SEARCH_AREA_B") return 15;
+    if (goal_id == "HIGHGROUND_SCAN") return 16;
+    if (goal_id == "HIGHGROUND_CENTER") return 17;
+    if (goal_id == "MID_CROSS") return 18;
+    if (goal_id == "BASE_HOME") return 19;
+    if (goal_id == "BASE_HOLD") return 20;
+    return 0;
+}
+
+std::uint64_t ElapsedSince(std::uint64_t now_ms, std::uint64_t then_ms)
+{
+    return (then_ms == 0 || now_ms <= then_ms) ? 0 : (now_ms - then_ms);
+}
+
+void SwitchToNextResupplyCandidate(RobotContext& ctx, const std::string& reason)
+{
+    if (ctx.resupply_candidates.empty())
+    {
+        ctx.resupply_goal_current = "SUPPLY_LEFT";
+        ctx.resupply_reason = reason + " 候选列表为空，fallback=SUPPLY_LEFT。";
+        return;
+    }
+
+    ctx.resupply_candidate_index =
+        (ctx.resupply_candidate_index + 1) %
+        static_cast<int>(ctx.resupply_candidates.size());
+    ctx.resupply_goal_current =
+        ctx.resupply_candidates[static_cast<std::size_t>(ctx.resupply_candidate_index)];
+    ctx.resupply_goal_start_ms = ctx.now_ms;
+    ctx.resupply_last_candidate_switch_ms = ctx.now_ms;
+    ctx.resupply_rfid_confirm_ms = 0;
+    ctx.resupply_rfid_confirmed = false;
+    ctx.resupply_waiting_recovery = false;
+    ctx.resupply_reason = reason + " 切换到候选补给点 " + ctx.resupply_goal_current + "。";
+}
+
 SpinMode DecideSituationalSpinPreference(const RobotContext& ctx, std::string& reason)
 {
     const float hp_ratio = SafeRatio(ctx.hp, ctx.hp_max);
@@ -164,22 +216,21 @@ public:
         else if (ctx_->is_dead)
         {
             ctx_->tactical_state = TacticalState::RETREAT;
-            ctx_->tactical_reason = "当前已判定为死亡状态，应立即让复活分支接管。";
+            ctx_->tactical_reason =
+                ctx_->dead_return_home_enabled && ctx_->dead_chassis_can_move
+                    ? "死亡但底盘默认可动，进入回基地补满血硬任务；复活确认分支并行保留。"
+                    : "当前已判定为死亡状态，应立即让复活分支接管。";
         }
-        else if (ctx_->need_emergency_safety || hp_ratio < 0.20f || heat_ratio > 0.90f)
+        else if (ctx_->need_emergency_safety || heat_ratio > 0.90f)
         {
             ctx_->tactical_state = TacticalState::RETREAT;
-            ctx_->tactical_reason = "血量、热量或紧急守卫触发，需立即撤退。";
-        }
-        else if (hp_ratio < 0.33f && ctx_->enemy_in_view)
-        {
-            ctx_->tactical_state = TacticalState::RETREAT;
-            ctx_->tactical_reason = "低血且仍有敌情压力，优先撤出战线而不是冒险走补给路线。";
+            ctx_->tactical_reason = "热量或紧急守卫触发，需立即撤退。";
         }
         else if (ctx_->need_supply)
         {
             ctx_->tactical_state = TacticalState::RESUPPLY;
-            ctx_->tactical_reason = "弹药或血量已低于补给阈值，转入补给态。";
+            ctx_->tactical_reason =
+                "低血/低弹已进入补给闭环，优先级高于普通搜索和交战。";
         }
         else if ((ctx_->on_base || ctx_->on_fortress || ctx_->on_outpost) &&
                  !ctx_->enemy_in_view)
@@ -249,16 +300,41 @@ public:
             return BT::NodeStatus::FAILURE;
         }
 
-        const auto best = std::max_element(
-            ctx_->goal_candidates.begin(), ctx_->goal_candidates.end(),
-            [](const GoalCandidate& lhs, const GoalCandidate& rhs) {
-                return lhs.score < rhs.score;
-            });
+        auto best = ctx_->goal_candidates.end();
+        bool avoided_failed_goal = false;
+        for (auto it = ctx_->goal_candidates.begin(); it != ctx_->goal_candidates.end(); ++it)
+        {
+            const bool is_current_failed_goal =
+                ctx_->nav_goal_failed && ctx_->current_goal_id != 0 &&
+                GoalNameToProtocolId(it->id) == ctx_->current_goal_id;
+            if (is_current_failed_goal && ctx_->goal_candidates.size() > 1)
+            {
+                avoided_failed_goal = true;
+                continue;
+            }
+            if (best == ctx_->goal_candidates.end() || it->score > best->score)
+            {
+                best = it;
+            }
+        }
+
+        if (best == ctx_->goal_candidates.end())
+        {
+            best = std::max_element(
+                ctx_->goal_candidates.begin(), ctx_->goal_candidates.end(),
+                [](const GoalCandidate& lhs, const GoalCandidate& rhs) {
+                    return lhs.score < rhs.score;
+                });
+        }
 
         ctx_->preferred_goal = best->id;
         ctx_->goal_reason = best->rationale.empty()
                                 ? "在当前候选列表中选择得分最高的目标点。"
                                 : best->rationale;
+        if (avoided_failed_goal)
+        {
+            ctx_->goal_reason += " 当前目标被导航执行器标记为卡住/失败，本轮切换到备用候选点。";
+        }
         return BT::NodeStatus::SUCCESS;
     }
 };
@@ -529,15 +605,101 @@ public:
     BT::NodeStatus tick() override
     {
         std::lock_guard<std::mutex> lock(ctx_->mtx);
-        if (ctx_->on_base)
+        if (!ctx_->need_supply)
         {
-            AddGoalCandidate(*ctx_, "BASE_HOLD", 1.05f + AdviceBonus(*ctx_, "BASE_HOLD"),
-                             "当前只确认到基地增益点，低资源时优先留在基地侧完成保守补给。");
+            ctx_->resupply_rfid_confirmed = false;
+            ctx_->resupply_waiting_recovery = false;
+            ctx_->resupply_reason = "资源已恢复到退出阈值，退出补给闭环。";
+            return BT::NodeStatus::SUCCESS;
         }
-        AddGoalCandidate(*ctx_, "SUPPLY_LEFT", 0.95f + AdviceBonus(*ctx_, "SUPPLY_LEFT"),
-                         "资源偏低时，优先考虑左侧补给路线。");
-        AddGoalCandidate(*ctx_, "SUPPLY_RIGHT", 0.82f + AdviceBonus(*ctx_, "SUPPLY_RIGHT"),
-                         "右侧补给路线作为主路线受阻时的备选方案。");
+
+        if (ctx_->resupply_goal_current.empty())
+        {
+            ctx_->resupply_goal_current = ctx_->resupply_candidates.empty()
+                                              ? std::string("SUPPLY_LEFT")
+                                              : ctx_->resupply_candidates.front();
+        }
+
+        if (ctx_->at_valid_recovery_rfid)
+        {
+            if (ctx_->on_base)
+            {
+                ctx_->resupply_goal_current = "BASE_HOME";
+            }
+            if (ctx_->resupply_rfid_confirm_ms == 0)
+            {
+                ctx_->resupply_rfid_confirm_ms = ctx_->now_ms;
+            }
+            const bool hold_ok =
+                ElapsedSince(ctx_->now_ms, ctx_->resupply_rfid_confirm_ms) >=
+                ctx_->resupply_rfid_confirm_hold_ms;
+            const bool wait_timeout =
+                ctx_->resupply_wait_recovery_timeout_ms > 0 &&
+                ElapsedSince(ctx_->now_ms, ctx_->resupply_rfid_confirm_ms) >=
+                    ctx_->resupply_wait_recovery_timeout_ms;
+            if (hold_ok && wait_timeout)
+            {
+                SwitchToNextResupplyCandidate(
+                    *ctx_, "RFID 已确认但血量/弹量等待恢复超时");
+                AddGoalCandidate(*ctx_, ctx_->resupply_goal_current, 2.0f,
+                                 ctx_->resupply_reason);
+                return BT::NodeStatus::SUCCESS;
+            }
+            ctx_->resupply_rfid_confirmed = hold_ok;
+            ctx_->resupply_waiting_recovery = hold_ok;
+            ctx_->resupply_reason =
+                ctx_->on_base
+                    ? "RFID 确认在基地恢复点，停留等待血量/弹量恢复。"
+                    : "RFID 确认在补给区，停留等待血量/弹量恢复。";
+            AddGoalCandidate(*ctx_, ctx_->resupply_goal_current, 2.0f,
+                             ctx_->resupply_reason);
+            return BT::NodeStatus::SUCCESS;
+        }
+
+        ctx_->resupply_rfid_confirm_ms = 0;
+        ctx_->resupply_rfid_confirmed = false;
+        ctx_->resupply_waiting_recovery = false;
+
+        const bool current_candidate_failed =
+            ctx_->nav_goal_failed && ctx_->current_goal_id != 0 &&
+            GoalNameToProtocolId(ctx_->resupply_goal_current) == ctx_->current_goal_id;
+        const bool current_candidate_reached_without_rfid =
+            ctx_->nav_goal_reached && ctx_->current_goal_id != 0 &&
+            GoalNameToProtocolId(ctx_->resupply_goal_current) == ctx_->current_goal_id;
+        const bool candidate_timeout =
+            ctx_->resupply_goal_timeout_ms > 0 &&
+            ElapsedSince(ctx_->now_ms, ctx_->resupply_goal_start_ms) >=
+                ctx_->resupply_goal_timeout_ms;
+        const bool switch_cooldown_ok =
+            ElapsedSince(ctx_->now_ms, ctx_->resupply_last_candidate_switch_ms) >=
+            ctx_->resupply_candidate_switch_cooldown_ms;
+
+        if ((current_candidate_failed || current_candidate_reached_without_rfid ||
+             candidate_timeout) &&
+            switch_cooldown_ok)
+        {
+            if (current_candidate_failed)
+            {
+                SwitchToNextResupplyCandidate(*ctx_, "当前补给候选导航失败");
+            }
+            else if (current_candidate_reached_without_rfid)
+            {
+                SwitchToNextResupplyCandidate(
+                    *ctx_, "已到达补给候选点但 RFID 未确认恢复区");
+            }
+            else
+            {
+                SwitchToNextResupplyCandidate(*ctx_, "补给候选点导航超时");
+            }
+        }
+        else
+        {
+            ctx_->resupply_reason =
+                "需要补给但 RFID 未确认，导航到候选恢复点 " +
+                ctx_->resupply_goal_current + "。";
+        }
+
+        AddGoalCandidate(*ctx_, ctx_->resupply_goal_current, 2.0f, ctx_->resupply_reason);
         return BT::NodeStatus::SUCCESS;
     }
 };
