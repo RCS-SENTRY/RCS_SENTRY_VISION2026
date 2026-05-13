@@ -12,6 +12,8 @@
   <depend>rclcpp</depend>
   <depend>rclpy</depend>
   <depend>rm_interfaces</depend>
+  <depend>sensor_msgs</depend>
+  <depend>std_msgs</depend>
   <depend>behaviortree_cpp_v3</depend>
   <depend>tinyxml2</depend>
   <depend>yaml-cpp</depend>

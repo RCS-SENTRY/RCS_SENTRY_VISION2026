@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=XMU Sentry Match Watchdog
+Exec=/home/rm/Desktop/SENTRY_FULL/XMU_RCS_SENTRY/tools/start_sentry_desktop_watchdog.sh
+Terminal=false
+X-GNOME-Autostart-enabled=true
+Hidden=false
+NoDisplay=false
+Comment=Start XMU RoboMaster sentry full chain after desktop login.
+Categories=Utility;

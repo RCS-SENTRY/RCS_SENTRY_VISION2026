@@ -1,0 +1,116 @@
+initial_status:
+  game_progress: 4
+  stage_remain_time: 420
+  current_hp: 400
+  maximum_hp: 400
+  shooter_barrel_cooling_value: 30
+  shooter_barrel_heat_limit: 260
+  chassis_power_limit: 100
+  chassis_power: 20.0
+  remain_energy: 65.0
+  projectile_allowance_17mm: 220
+  remaining_gold_coin: 300
+  is_disengaged: 1
+  sentry_posture: 3
+
+initial_sim_input:
+  enemy_in_view: false
+  enemy_confidence: 0.0
+  enemy_distance_m: 12.0
+  on_supply: false
+  on_fortress: false
+  on_outpost: false
+  on_highground: false
+  can_claim_periodic_ammo: false
+  posture_switch_requested: false
+
+visualization:
+  teammates:
+    - {name: "ALLY_HERO block lane", x: -5.10, y: 2.80, radius: 0.45}
+    - {name: "ALLY_INFANTRY crossing", x: -3.10, y: 3.45, radius: 0.42}
+  obstacles:
+    - {name: "FIELD COVER", x: -6.85, y: 3.05, radius: 0.38, color: "neutral"}
+  enemies:
+    - {name: "ENEMY_FAR scout", x: -7.60, y: 4.30, radius: 0.32, active: false}
+
+phases:
+  - duration_ms: 4500
+    sim_input:
+      enemy_in_view: false
+      enemy_confidence: 0.0
+      enemy_distance_m: 12.0
+      on_highground: false
+    visual:
+      obstacles:
+        - {name: "ALLY_TEMP lane merge", x: -1.80, y: 1.25, radius: 0.44}
+
+  - duration_ms: 4500
+    status:
+      is_disengaged: 0
+    sim_input:
+      enemy_in_view: true
+      enemy_confidence: 0.92
+      enemy_distance_m: 5.6
+      on_highground: true
+    visual:
+      active_enemy: {name: "ACTIVE_TARGET <=7m", x: -5.20, y: 3.70, radius: 0.34, active: true}
+
+  - duration_ms: 4500
+    status:
+      current_hp: 245
+      is_disengaged: 0
+    sim_input:
+      enemy_in_view: true
+      enemy_confidence: 0.88
+      enemy_distance_m: 4.8
+      on_highground: true
+    visual:
+      active_enemy: {name: "ENEMY damaging sentry", x: -4.85, y: 3.35, radius: 0.34, active: true}
+      enemies:
+        - {name: "ENEMY_SUPPORT", x: -6.20, y: 4.10, radius: 0.30, active: false}
+
+  - duration_ms: 4500
+    status:
+      current_hp: 0
+      can_confirm_revival: 1
+      can_buy_instant_revival: 1
+      instant_revival_cost: 100
+      is_disengaged: 1
+    sim_input:
+      enemy_in_view: false
+      enemy_confidence: 0.0
+      enemy_distance_m: 12.0
+      on_highground: false
+    visual:
+      enemies:
+        - {name: "ENEMY passed after kill", x: -2.60, y: 2.40, radius: 0.34, active: false}
+
+  - duration_ms: 5000
+    status:
+      current_hp: 400
+      can_confirm_revival: 0
+      can_buy_instant_revival: 0
+      is_disengaged: 1
+    sim_input:
+      enemy_in_view: false
+      enemy_confidence: 0.0
+      enemy_distance_m: 12.0
+      on_supply: true
+      can_claim_periodic_ammo: true
+    visual:
+      teammates:
+        - {name: "ALLY protects supply", x: 1.95, y: 1.35, radius: 0.45}
+
+  - duration_ms: 4500
+    status:
+      current_hp: 400
+      projectile_allowance_17mm: 200
+      is_disengaged: 1
+    sim_input:
+      enemy_in_view: true
+      enemy_confidence: 0.90
+      enemy_distance_m: 6.5
+      on_supply: false
+      on_highground: false
+    visual:
+      active_enemy: {name: "POST_REVIVE_TARGET", x: -3.50, y: 4.00, radius: 0.34, active: true}

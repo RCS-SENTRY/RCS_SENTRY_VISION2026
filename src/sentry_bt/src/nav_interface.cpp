@@ -24,7 +24,7 @@ VelocityProfile GoalVelocity(const RobotContext& ctx, const NavInterface::GoalCo
 {
     const std::string& goal = command.goal_id;
     if (!ctx.match_started || ctx.is_dead || !ctx.referee_link_fresh ||
-        goal == "SAFE_HOLD" || goal == "WAIT_REVIVE")
+        goal == "CURRENT_HOLD" || goal == "SAFE_HOLD" || goal == "WAIT_REVIVE")
     {
         return VelocityProfile{0.0, 0.0, 0.0, true};
     }
@@ -49,19 +49,9 @@ VelocityProfile GoalVelocity(const RobotContext& ctx, const NavInterface::GoalCo
         return VelocityProfile{-slow_speed, -strafe_speed,
                                NavigationAngularZ(command, 0.0), false};
     }
-    if (goal == "COMBAT_KITE_A")
-    {
-        const double lateral = ctx.enemy_distance_m < 3.0f ? strafe_speed : strafe_speed * 0.5;
-        return VelocityProfile{-slow_speed, lateral, NavigationAngularZ(command, 0.0), false};
-    }
-    if (goal == "MID_PRESSURE" || goal == "COMBAT_PUSH_A" || goal == "MID_CROSS")
+    if (goal == "MID_CROSS")
     {
         return VelocityProfile{linear_speed, 0.0, NavigationAngularZ(command, 0.0), false};
-    }
-    if (goal == "HIGHGROUND_CENTER")
-    {
-        return VelocityProfile{linear_speed * 0.75, 0.0,
-                               NavigationAngularZ(command, scan_wz * 0.35), false};
     }
     if (goal == "SEARCH_AREA_A")
     {
@@ -73,13 +63,7 @@ VelocityProfile GoalVelocity(const RobotContext& ctx, const NavInterface::GoalCo
         return VelocityProfile{slow_speed, -strafe_speed * 0.35,
                                NavigationAngularZ(command, -scan_wz), false};
     }
-    if (goal == "HIGHGROUND_SCAN")
-    {
-        return VelocityProfile{0.0, 0.0, NavigationAngularZ(command, scan_wz), true};
-    }
-
-    if (goal == "BASE_HOLD" || goal == "FORTRESS_HOLD" || goal == "OUTPOST_HOLD" ||
-        goal == "COMBAT_HOLD_A" || goal == "HIGHGROUND_PEEK")
+    if (goal == "BASE_HOLD" || goal == "FORTRESS_HOLD" || goal == "OUTPOST_HOLD")
     {
         return VelocityProfile{0.0, 0.0, NavigationAngularZ(command, 0.0), true};
     }

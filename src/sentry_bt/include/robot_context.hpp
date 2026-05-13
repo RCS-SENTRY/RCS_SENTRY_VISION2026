@@ -45,6 +45,15 @@ enum class SupercapMode
     BURST
 };
 
+enum class InternalMotionState
+{
+    NAV,
+    RESUPPLY,
+    RETREAT,
+    ATTACK,
+    DEFENSE
+};
+
 enum class RuleActionType
 {
     NONE,
@@ -113,6 +122,9 @@ struct RobotContext
     bool enemy_in_view{false};
     float enemy_confidence{0.0f};
     float enemy_distance_m{0.0f};
+    bool under_attack{false};
+    std::uint8_t armor_id{0};
+    std::uint8_t hp_deduction_reason{0};
     bool on_supply{false};
     bool on_base{false};
     bool on_fortress{false};
@@ -120,7 +132,10 @@ struct RobotContext
     bool on_highground{false};
     bool at_valid_recovery_rfid{false};
     std::uint32_t rfid_status{0};
+    std::uint8_t rfid_status_2{0};
     std::uint8_t recovery_buff{0};
+    bool require_recovery_buff_for_confirm{false};
+    std::string recovery_confirmed_by{"none"};
     Posture reported_posture{Posture::MOVE};
     Posture current_posture{Posture::MOVE};
     Posture pending_posture_target{Posture::MOVE};
@@ -153,6 +168,18 @@ struct RobotContext
     bool resupply_active{false};
     bool need_emergency_safety{false};
     bool need_rule_action{false};
+    bool safety_interrupt_active{false};
+    bool safety_debug_seen{false};
+    bool safety_emergency_active{false};
+    bool safety_obstacle_timeout{false};
+    std::uint64_t safety_debug_last_seen_ms{0};
+    std::uint64_t safety_debug_timeout_ms{500};
+    bool main_lidar_seen{false};
+    std::uint64_t main_lidar_last_seen_ms{0};
+    std::uint64_t main_lidar_timeout_ms{500};
+    std::uint64_t safety_interrupt_last_seen_ms{0};
+    std::uint64_t safety_collision_interrupt_ms{2500};
+    std::string safety_interrupt_reason{};
     bool can_activate_energy_mechanism{false};
     bool can_claim_periodic_ammo{false};
     bool posture_switch_requested{false};
@@ -171,6 +198,8 @@ struct RobotContext
     // desired_* 表示执行层在考虑约束后的“最终下发值”。
     RuleActionType rule_action_type{RuleActionType::NONE};
     TacticalState tactical_state{TacticalState::SEARCH};
+    std::uint64_t tactical_state_enter_ms{0};
+    std::uint64_t tactical_state_min_hold_ms{3000};
     std::vector<GoalCandidate> goal_candidates{};
     std::string preferred_goal{"SAFE_HOLD"};
     Posture preferred_posture{Posture::MOVE};
@@ -182,6 +211,10 @@ struct RobotContext
     FirePolicy desired_fire_policy{FirePolicy::NORMAL};
     SpinMode desired_spin_mode{SpinMode::OFF};
     SupercapMode desired_supercap_mode{SupercapMode::OFF};
+    bool internal_motion_initialized{false};
+    InternalMotionState internal_motion_latched{InternalMotionState::NAV};
+    std::uint64_t internal_motion_last_change_ms{0};
+    std::uint64_t internal_motion_min_hold_ms{3000};
 
     // 旁路建议信号。
     // 战术层可以把它作为软参考，但优先级始终低于硬约束和显式规则动作。
@@ -220,6 +253,45 @@ struct RobotContext
     std::uint64_t last_energy_activate_ms{0};
     std::uint64_t last_periodic_ammo_claim_ms{0};
 
+    // 小陀螺执行层滞回。战术层只给瞬时偏好，executor 用这些状态把输出滤成稳定执行态。
+    bool spin_hysteresis_enabled{true};
+    SpinMode spin_filtered_mode{SpinMode::OFF};
+    std::uint64_t spin_last_change_ms{0};
+    std::uint64_t spin_preference_on_since_ms{0};
+    std::uint64_t spin_preference_off_since_ms{0};
+    std::uint64_t spin_target_last_seen_ms{0};
+    std::uint64_t spin_under_attack_last_seen_ms{0};
+    bool spin_hp_observation_initialized{false};
+    int spin_last_observed_hp{0};
+    std::uint64_t spin_on_confirm_ms{0};
+    std::uint64_t spin_off_confirm_ms{0};
+    std::uint64_t spin_min_on_ms{0};
+    std::uint64_t spin_min_off_ms{0};
+    std::uint64_t spin_target_hold_ms{5000};
+    std::uint64_t spin_under_attack_hold_ms{5000};
+    int spin_hp_drop_threshold{0};
+    bool spin_hp_drop_triggers_under_attack{false};
+    float engage_target_max_distance_m{7.0f};
+
+    // fire_policy 在决策链路里作为自瞄开关：1=关闭自瞄，2=开启自瞄。
+    bool fire_policy_hysteresis_enabled{true};
+    FirePolicy fire_filtered_policy{FirePolicy::CONSERVATIVE};
+    std::uint64_t fire_policy_last_change_ms{0};
+    std::uint64_t fire_policy_enable_since_ms{0};
+    std::uint64_t fire_policy_disable_since_ms{0};
+    std::uint64_t fire_policy_target_last_seen_ms{0};
+    std::uint64_t fire_policy_on_confirm_ms{150};
+    std::uint64_t fire_policy_off_confirm_ms{800};
+    std::uint64_t fire_policy_min_on_ms{1500};
+    std::uint64_t fire_policy_min_off_ms{500};
+    std::uint64_t fire_policy_target_hold_ms{1200};
+
+    // 固定巡航防守序列。每个点到达/超时等效到达后 dwell，dwell 结束再推进到下一个。
+    std::vector<std::string> patrol_goals{"SEARCH_AREA_B", "MID_CROSS", "SEARCH_AREA_A"};
+    int patrol_goal_index{0};
+    std::uint8_t patrol_last_advanced_goal_id{0};
+    std::string patrol_reason{};
+
     // 死亡后回基地补满血硬任务。WAIT_REVIVE 只表达复活状态，不再作为导航点使用。
     bool dead_return_home_enabled{true};
     bool dead_return_no_timeout{true};
@@ -245,15 +317,15 @@ struct RobotContext
     bool resupply_rfid_confirmed{false};
     bool resupply_waiting_recovery{false};
     std::string resupply_reason{};
-    float hp_resupply_enter_ratio{0.35f};
-    float hp_resupply_exit_ratio{0.60f};
+    float hp_resupply_enter_ratio{0.60f};
+    float hp_resupply_exit_ratio{0.85f};
     int ammo_resupply_enter_count{80};
     int ammo_resupply_exit_count{120};
     std::uint64_t resupply_rfid_confirm_hold_ms{300};
     std::uint64_t resupply_goal_timeout_ms{12000};
     std::uint64_t resupply_wait_recovery_timeout_ms{12000};
     std::uint64_t resupply_candidate_switch_cooldown_ms{1500};
-    std::vector<std::string> resupply_candidates{"SUPPLY_LEFT", "SUPPLY_RIGHT", "BASE_HOME"};
+    std::vector<std::string> resupply_candidates{"SUPPLY_LEFT", "SUPPLY_RIGHT"};
 
     // sentry_bt 全自动巡航/到点 dwell。补给、交战、撤退和死亡硬任务不受 dwell 约束。
     std::uint8_t dwell_goal_id{0};
@@ -265,9 +337,9 @@ struct RobotContext
     std::uint64_t dwell_required_ms{0};
     std::uint64_t dwell_remaining_ms{0};
     std::string dwell_reason{};
-    std::uint64_t goal_dwell_default_ms{1500};
-    std::uint64_t goal_dwell_search_ms{2500};
-    std::uint64_t goal_dwell_hold_ms{3000};
+    std::uint64_t goal_dwell_default_ms{12000};
+    std::uint64_t goal_dwell_search_ms{12000};
+    std::uint64_t goal_dwell_hold_ms{12000};
     std::uint64_t goal_dwell_resupply_ms{0};
     std::uint64_t goal_dwell_engage_ms{0};
 
@@ -385,15 +457,15 @@ inline const char* FirePolicyToString(FirePolicy policy)
     switch (policy)
     {
         case FirePolicy::HOLD_FIRE:
-            return "HOLD_FIRE";
+            return "HOLD_FIRE/AUTOAIM_SAFE_OFF";
         case FirePolicy::CONSERVATIVE:
-            return "CONSERVATIVE";
+            return "AUTOAIM_OFF";
         case FirePolicy::NORMAL:
-            return "NORMAL";
+            return "AUTOAIM_ON";
         case FirePolicy::AGGRESSIVE:
-            return "AGGRESSIVE";
+            return "AUTOAIM_ON_RESERVED";
     }
-    return "NORMAL";
+    return "AUTOAIM_OFF";
 }
 
 inline const char* SpinModeToString(SpinMode mode)
@@ -420,6 +492,40 @@ inline const char* SupercapModeToString(SupercapMode mode)
             return "BURST";
     }
     return "OFF";
+}
+
+inline const char* InternalMotionStateToString(InternalMotionState state)
+{
+    switch (state)
+    {
+        case InternalMotionState::NAV:
+            return "NAV";
+        case InternalMotionState::RESUPPLY:
+            return "RESUPPLY";
+        case InternalMotionState::RETREAT:
+            return "RETREAT";
+        case InternalMotionState::ATTACK:
+            return "ATTACK";
+        case InternalMotionState::DEFENSE:
+            return "DEFENSE";
+    }
+    return "NAV";
+}
+
+inline Posture InternalMotionToRefereePosture(InternalMotionState state)
+{
+    switch (state)
+    {
+        case InternalMotionState::ATTACK:
+            return Posture::ATTACK;
+        case InternalMotionState::DEFENSE:
+            return Posture::DEFENSE;
+        case InternalMotionState::RESUPPLY:
+        case InternalMotionState::RETREAT:
+        case InternalMotionState::NAV:
+            return Posture::MOVE;
+    }
+    return Posture::MOVE;
 }
 
 inline const char* RuleActionTypeToString(RuleActionType type)

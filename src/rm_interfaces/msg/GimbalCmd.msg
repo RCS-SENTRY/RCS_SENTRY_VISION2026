@@ -26,6 +26,7 @@ uint8   protocol_version
 uint8   goal_id
 uint8   tactical_state
 uint8   posture
+# Decision-side autoaim switch: 1=AUTOAIM_OFF, 2=AUTOAIM_ON.
 uint8   fire_policy
 uint8   spin_mode
 uint8   supercap_mode

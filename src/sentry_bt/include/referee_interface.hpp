@@ -3,6 +3,7 @@
 #include <array>
 #include <cstdint>
 #include <mutex>
+#include <vector>
 
 #include "rm_interfaces/msg/autoaim_target_status.hpp"
 #include "rm_interfaces/msg/gimbal_status.hpp"
@@ -25,6 +26,17 @@ public:
     void ConfigureSimInput(bool enable_sim_input, std::uint64_t sim_input_timeout_ms);
     void ConfigureDecisionStatusInputs(std::uint64_t autoaim_status_timeout_ms,
                                        std::uint64_t nav_status_timeout_ms);
+    void ConfigureRfidBits(
+        const std::vector<int64_t>& base_bits,
+        const std::vector<int64_t>& supply_bits,
+        const std::vector<int64_t>& fortress_bits,
+        const std::vector<int64_t>& outpost_bits,
+        const std::vector<int64_t>& highground_bits,
+        const std::vector<int64_t>& base_bits_2,
+        const std::vector<int64_t>& supply_bits_2,
+        const std::vector<int64_t>& fortress_bits_2,
+        const std::vector<int64_t>& outpost_bits_2,
+        const std::vector<int64_t>& highground_bits_2);
 
     void UpdateFromStatus(const rm_interfaces::msg::GimbalStatus& status);
     void UpdateFromSimInput(const rm_interfaces::msg::SentrySimInput& sim_input);
@@ -59,6 +71,16 @@ private:
     std::uint64_t enemy_memory_ms_{800};
     std::uint64_t autoaim_status_timeout_ms_{300};
     std::uint64_t nav_status_timeout_ms_{500};
+    std::vector<int64_t> rfid_base_bits_{0};
+    std::vector<int64_t> rfid_supply_bits_{19, 20};
+    std::vector<int64_t> rfid_fortress_bits_{17};
+    std::vector<int64_t> rfid_outpost_bits_{18};
+    std::vector<int64_t> rfid_highground_bits_{1, 2, 3, 4, 9, 10, 11, 12};
+    std::vector<int64_t> rfid_base_bits_2_{};
+    std::vector<int64_t> rfid_supply_bits_2_{};
+    std::vector<int64_t> rfid_fortress_bits_2_{};
+    std::vector<int64_t> rfid_outpost_bits_2_{};
+    std::vector<int64_t> rfid_highground_bits_2_{};
     std::uint64_t last_status_ms_{0};
     std::uint64_t last_sim_input_ms_{0};
     std::uint64_t last_autoaim_target_status_ms_{0};

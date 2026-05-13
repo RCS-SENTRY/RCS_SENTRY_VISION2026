@@ -1,0 +1,105 @@
+defaults:
+  match_started: true
+  referee_link_fresh: true
+  sim_input_fresh: true
+  hp: 400
+  hp_max: 400
+  heat: 0
+  heat_limit: 260
+  ammo_17: 200
+  gold: 400
+  team_17mm_exchange_remain: 1000
+  stage_remain_time: 420
+  is_disengaged: true
+  supercap_soc: 0.50
+  current_posture: MOVE
+  reported_posture: MOVE
+  now_ms: 10000
+
+cases:
+  - name: patrol_without_target_or_hit_keeps_spin_off
+    context:
+      on_highground: true
+      enemy_in_view: false
+      enemy_confidence: 0.0
+      enemy_distance_m: 12.0
+    expected:
+      tactical_state: SEARCH
+      desired_goal: SEARCH_AREA_A
+      desired_posture: MOVE
+      fire_policy: HOLD_FIRE
+      spin_mode: OFF
+      supercap_mode: OFF
+
+  - name: emergency_safety_still_keeps_spin_on
+    context:
+      hp: 60
+      hp_max: 400
+      enemy_in_view: true
+      enemy_confidence: 0.90
+      enemy_distance_m: 4.0
+    expected:
+      tactical_state: RETREAT
+      desired_goal: SAFE_RETREAT_A
+      desired_posture: MOVE
+      fire_policy: CONSERVATIVE
+      spin_mode: ON
+      supercap_mode: BURST
+
+  - name: engage_keeps_spin_on_and_bursts_supercap
+    context:
+      enemy_in_view: true
+      enemy_confidence: 0.95
+      enemy_distance_m: 4.0
+      is_disengaged: false
+    expected:
+      tactical_state: ENGAGE
+      desired_goal: CURRENT_HOLD
+      desired_posture: ATTACK
+      fire_policy: AGGRESSIVE
+      spin_mode: ON
+      supercap_mode: BURST
+
+  - name: fortress_hold_without_target_or_hit_keeps_spin_off
+    context:
+      on_fortress: true
+      enemy_in_view: false
+      enemy_confidence: 0.0
+      enemy_distance_m: 12.0
+    expected:
+      tactical_state: HOLD
+      desired_goal: FORTRESS_HOLD
+      desired_posture: DEFENSE
+      fire_policy: NORMAL
+      spin_mode: OFF
+      supercap_mode: OFF
+
+  - name: hp_drop_starts_spin_without_visible_target
+    context:
+      hp: 360
+      hp_max: 400
+      spin_hp_observation_initialized: true
+      spin_last_observed_hp: 400
+      enemy_in_view: false
+      enemy_confidence: 0.0
+      enemy_distance_m: 12.0
+    expected:
+      tactical_state: REPOSITION
+      desired_goal: MID_CROSS
+      desired_posture: MOVE
+      fire_policy: HOLD_FIRE
+      spin_mode: ON
+      supercap_mode: BURST
+      under_attack: true
+
+  - name: hurt_event_starts_spin_without_hp_delta
+    context:
+      armor_id: 2
+      hp_deduction_reason: 1
+      enemy_in_view: false
+      enemy_confidence: 0.0
+      enemy_distance_m: 12.0
+    expected:
+      spin_mode: ON
+      supercap_mode: BURST
+      under_attack: true

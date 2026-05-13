@@ -46,6 +46,83 @@ cases:
       desired_posture: MOVE
       fire_policy: CONSERVATIVE
 
+  - name: enemy_seen_holds_current_position_instead_of_combat_goal
+    context:
+      enemy_in_view: true
+      enemy_confidence: 0.92
+      enemy_distance_m: 4.0
+      current_goal_id: 14
+      nav_goal_active: true
+      desired_goal: SEARCH_AREA_A
+    expected:
+      tactical_state: ENGAGE
+      desired_goal: CURRENT_HOLD
+      desired_posture: ATTACK
+      fire_policy: AGGRESSIVE
+      spin_mode: ON
+
+  - name: enemy_seen_with_unhealthy_hp_retreats
+    context:
+      hp: 160
+      hp_max: 400
+      enemy_in_view: true
+      enemy_confidence: 0.92
+      enemy_distance_m: 4.0
+    expected:
+      tactical_state: RETREAT
+      desired_goal: SAFE_RETREAT_A
+      desired_posture: MOVE
+      fire_policy: CONSERVATIVE
+      spin_mode: ON
+
+  - name: spin_hysteresis_holds_on_while_target_window_active
+    context:
+      supercap_soc: 0.13
+      desired_spin_mode: ON
+      spin_filtered_mode: ON
+      spin_last_change_ms: 96000
+      spin_preference_off_since_ms: 98000
+      spin_target_last_seen_ms: 96000
+      now_ms: 100000
+    expected:
+      spin_mode: ON
+
+  - name: spin_hysteresis_turns_off_after_long_off_request
+    context:
+      supercap_soc: 0.13
+      desired_spin_mode: ON
+      spin_filtered_mode: ON
+      spin_last_change_ms: 90000
+      spin_preference_off_since_ms: 96000
+      spin_target_last_seen_ms: 94000
+      now_ms: 100000
+    expected:
+      spin_mode: OFF
+
+  - name: spin_hysteresis_target_memory_blocks_off_request
+    context:
+      supercap_soc: 0.13
+      desired_spin_mode: ON
+      spin_filtered_mode: ON
+      spin_last_change_ms: 90000
+      spin_preference_off_since_ms: 90000
+      spin_target_last_seen_ms: 97000
+      now_ms: 100000
+    expected:
+      spin_mode: ON
+
+  - name: spin_hysteresis_under_attack_memory_blocks_off_request
+    context:
+      supercap_soc: 0.13
+      desired_spin_mode: ON
+      spin_filtered_mode: ON
+      spin_last_change_ms: 90000
+      spin_preference_off_since_ms: 90000
+      spin_under_attack_last_seen_ms: 97000
+      now_ms: 100000
+    expected:
+      spin_mode: ON
+
   - name: base_rfid_holds_recovery_point_for_resupply
     context:
       hp: 100

@@ -80,14 +80,14 @@ rm_autoaim:
       # - 第二组3.5~4.0m调试: 0.111rad
       # - 第三组4.5~4.8m调试: 0.076rad, 在0.111rad基础上抬高约2deg
       # 后续按2m/3.5m/5m实弹落点继续细化，不要再叠加其他pitch补偿。
-      pitch_lut: [1.8, 0.280, 2.0, 0.230, 2.6, 0.171, 3.25, 0.128, 3.5, 0.111, 4.6, 0.08, 5.0, 0.08]
+      pitch_lut: [1.8, 0.280, 2.0, 0.240, 2.6, 0.191, 3.25, 0.138, 3.5, 0.121, 4.6, 0.098, 5.0, 0.098]
       # yaw 正=命令更向左, 负=命令更向右。
       # 第一组1.8m当前组实测需要向右约5deg: -0.087rad。
       # 第四组2.0m实测还需向右约2deg: -0.040rad。
       # 第五组2.6m实测还需向右约1deg: -0.059rad。
       # 第六组3.25m验收: 当前插值命中, 固化为验收点。
       # 第三组4.5~4.8m实测在-0.042rad基础上还需向右约3deg: -0.094rad。
-      yaw_lut: [1.8, -0.095, 2.0, -0.040, 2.6, -0.059, 3.25, -0.047, 3.5, -0.042, 4.6, -0.048, 5.0, -0.048]
+      yaw_lut: [1.8, -0.095, 2.0, -0.040, 2.6, -0.059, 3.25, -0.043, 3.5, -0.040, 4.6, -0.038, 5.0, -0.038]
       clamp_min_distance: 0.5
       clamp_max_distance: 8.0
       # 现场标定用运行时微调量，可直接 ros2 param set，不需要重启。
@@ -144,17 +144,18 @@ rm_autoaim:
     # ---- 火控: 炮管对齐容差 ----
     # 解算角度与下位机反馈角度的差值阈值 (rad)
     # 0.03 rad ≈ 1.7°
-    fire_tolerance: 0.03
+    fire_tolerance: 0.07
 
     # ---- Fire window ----
     use_dynamic_fire_window: true
     shooting_range_width: 0.135
-    shooting_range_height: 0.055
-    min_fire_window_deg: 1.0
-    max_fire_window_deg: 3.0
+    shooting_range_height: 0.080
+    min_fire_window_deg: 1.3
+    max_fire_window_deg: 4.0
 
     # ---- 火控: 收敛/距离保护 ----
     # Tracker 最少收敛帧数 (防止初始发散时开火)
-    fire_min_frames: 3
+    fire_min_frames: 0
     # 最大开火距离 (m)
     fire_max_distance: 8.0
+ 

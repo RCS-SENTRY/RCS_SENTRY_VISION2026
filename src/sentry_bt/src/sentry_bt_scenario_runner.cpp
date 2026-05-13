@@ -37,6 +37,36 @@ void NormalizePostureDebuffs(RobotContext& ctx)
     }
 }
 
+bool ParseInternalMotionState(const std::string& value, InternalMotionState& state)
+{
+    if (value == "NAV")
+    {
+        state = InternalMotionState::NAV;
+        return true;
+    }
+    if (value == "RESUPPLY")
+    {
+        state = InternalMotionState::RESUPPLY;
+        return true;
+    }
+    if (value == "RETREAT")
+    {
+        state = InternalMotionState::RETREAT;
+        return true;
+    }
+    if (value == "ATTACK")
+    {
+        state = InternalMotionState::ATTACK;
+        return true;
+    }
+    if (value == "DEFENSE")
+    {
+        state = InternalMotionState::DEFENSE;
+        return true;
+    }
+    return false;
+}
+
 void SetDefaultContext(RobotContext& ctx)
 {
     ctx.frame_index = 1;
@@ -140,6 +170,9 @@ void ApplyContextPatch(const YAML::Node& node, RobotContext& ctx)
     ReadScalar(node, "enemy_in_view", ctx.enemy_in_view);
     ReadScalar(node, "enemy_confidence", ctx.enemy_confidence);
     ReadScalar(node, "enemy_distance_m", ctx.enemy_distance_m);
+    ReadScalar(node, "under_attack", ctx.under_attack);
+    ReadScalar(node, "armor_id", ctx.armor_id);
+    ReadScalar(node, "hp_deduction_reason", ctx.hp_deduction_reason);
     ReadScalar(node, "on_supply", ctx.on_supply);
     ReadScalar(node, "on_base", ctx.on_base);
     ReadScalar(node, "on_fortress", ctx.on_fortress);
@@ -167,6 +200,32 @@ void ApplyContextPatch(const YAML::Node& node, RobotContext& ctx)
     ReadScalar(node, "last_posture_command_ms", ctx.last_posture_command_ms);
     ReadScalar(node, "last_energy_activate_ms", ctx.last_energy_activate_ms);
     ReadScalar(node, "last_periodic_ammo_claim_ms", ctx.last_periodic_ammo_claim_ms);
+    ReadScalar(node, "spin_hysteresis_enabled", ctx.spin_hysteresis_enabled);
+    ReadScalar(node, "spin_last_change_ms", ctx.spin_last_change_ms);
+    ReadScalar(node, "spin_preference_on_since_ms", ctx.spin_preference_on_since_ms);
+    ReadScalar(node, "spin_preference_off_since_ms", ctx.spin_preference_off_since_ms);
+    ReadScalar(node, "spin_target_last_seen_ms", ctx.spin_target_last_seen_ms);
+    ReadScalar(node, "spin_under_attack_last_seen_ms", ctx.spin_under_attack_last_seen_ms);
+    ReadScalar(node, "spin_hp_observation_initialized", ctx.spin_hp_observation_initialized);
+    ReadScalar(node, "spin_last_observed_hp", ctx.spin_last_observed_hp);
+    ReadScalar(node, "spin_on_confirm_ms", ctx.spin_on_confirm_ms);
+    ReadScalar(node, "spin_off_confirm_ms", ctx.spin_off_confirm_ms);
+    ReadScalar(node, "spin_min_on_ms", ctx.spin_min_on_ms);
+    ReadScalar(node, "spin_min_off_ms", ctx.spin_min_off_ms);
+    ReadScalar(node, "spin_target_hold_ms", ctx.spin_target_hold_ms);
+    ReadScalar(node, "spin_under_attack_hold_ms", ctx.spin_under_attack_hold_ms);
+    ReadScalar(node, "spin_hp_drop_threshold", ctx.spin_hp_drop_threshold);
+    ReadScalar(node, "dwell_goal_id", ctx.dwell_goal_id);
+    ReadScalar(node, "dwell_start_ms", ctx.dwell_start_ms);
+    ReadScalar(node, "dwell_active", ctx.dwell_active);
+    ReadScalar(node, "dwell_complete", ctx.dwell_complete);
+    ReadScalar(node, "dwell_required_ms", ctx.dwell_required_ms);
+    ReadScalar(node, "dwell_remaining_ms", ctx.dwell_remaining_ms);
+    ReadScalar(node, "tactical_state_enter_ms", ctx.tactical_state_enter_ms);
+    ReadScalar(node, "tactical_state_min_hold_ms", ctx.tactical_state_min_hold_ms);
+    ReadScalar(node, "internal_motion_initialized", ctx.internal_motion_initialized);
+    ReadScalar(node, "internal_motion_last_change_ms", ctx.internal_motion_last_change_ms);
+    ReadScalar(node, "internal_motion_min_hold_ms", ctx.internal_motion_min_hold_ms);
     ReadScalar(node, "posture_debuff_threshold_ms", ctx.posture_debuff_threshold_ms);
     ReadScalar(node, "posture_debuff_rotate_margin_ms", ctx.posture_debuff_rotate_margin_ms);
 
@@ -195,6 +254,30 @@ void ApplyContextPatch(const YAML::Node& node, RobotContext& ctx)
         ParsePosture(node["preferred_posture"].as<std::string>(), posture))
     {
         ctx.preferred_posture = posture;
+    }
+    InternalMotionState internal_motion = InternalMotionState::NAV;
+    if (node["internal_motion_latched"] &&
+        ParseInternalMotionState(node["internal_motion_latched"].as<std::string>(),
+                                 internal_motion))
+    {
+        ctx.internal_motion_latched = internal_motion;
+    }
+
+    SpinMode spin_mode = SpinMode::OFF;
+    if (node["desired_spin_mode"] &&
+        ParseSpinMode(node["desired_spin_mode"].as<std::string>(), spin_mode))
+    {
+        ctx.desired_spin_mode = spin_mode;
+    }
+    if (node["preferred_spin_mode"] &&
+        ParseSpinMode(node["preferred_spin_mode"].as<std::string>(), spin_mode))
+    {
+        ctx.preferred_spin_mode = spin_mode;
+    }
+    if (node["spin_filtered_mode"] &&
+        ParseSpinMode(node["spin_filtered_mode"].as<std::string>(), spin_mode))
+    {
+        ctx.spin_filtered_mode = spin_mode;
     }
 
     if (node["posture_accumulated_ms"])
@@ -351,6 +434,15 @@ void ApplyStatusPatch(const YAML::Node& node, rm_interfaces::msg::GimbalStatus& 
         status.can_activate_energy_mechanism =
             static_cast<std::uint8_t>(node["can_activate_energy_mechanism"].as<int>());
     }
+    if (node["armor_id"])
+    {
+        status.armor_id = static_cast<std::uint8_t>(node["armor_id"].as<int>());
+    }
+    if (node["hp_deduction_reason"])
+    {
+        status.hp_deduction_reason =
+            static_cast<std::uint8_t>(node["hp_deduction_reason"].as<int>());
+    }
 }
 
 void SyncStatusPatchToContext(const YAML::Node& status_node, RobotContext& ctx)
@@ -464,6 +556,7 @@ std::vector<std::string> CheckExpected(const RobotContext& ctx, const YAML::Node
     CheckBool(expected, "supercap_guard_active", ctx.supercap_guard_active, failures);
     CheckBool(expected, "need_emergency_safety", ctx.need_emergency_safety, failures);
     CheckBool(expected, "on_base", ctx.on_base, failures);
+    CheckBool(expected, "under_attack", ctx.under_attack, failures);
     CheckBool(expected, "health_data_degraded", ctx.health_data_degraded, failures);
     return failures;
 }

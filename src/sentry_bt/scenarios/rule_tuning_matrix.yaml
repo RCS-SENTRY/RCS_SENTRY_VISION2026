@@ -19,24 +19,24 @@ defaults:
   now_ms: 10000
 
 cases:
-  - name: full_resource_repositions_to_highground
+  - name: full_resource_repositions_to_mid_cross
     context:
       on_highground: false
     expected:
       tactical_state: REPOSITION
       rule_action_type: NONE
-      desired_goal: HIGHGROUND_CENTER
+      desired_goal: MID_CROSS
       desired_posture: MOVE
       fire_policy: CONSERVATIVE
       spin_mode: ON
       supercap_mode: BURST
 
-  - name: highground_search_prefers_scan
+  - name: search_prefers_primary_patrol
     context:
       on_highground: true
     expected:
       tactical_state: SEARCH
-      desired_goal: HIGHGROUND_SCAN
+      desired_goal: SEARCH_AREA_A
       fire_policy: CONSERVATIVE
       spin_mode: ON
       supercap_mode: OFF
@@ -60,7 +60,7 @@ cases:
       is_disengaged: false
     expected:
       tactical_state: ENGAGE
-      desired_goal: COMBAT_KITE_A
+      desired_goal: CURRENT_HOLD
       desired_posture: ATTACK
       posture_cmd_referee: 1
       fire_policy: AGGRESSIVE
@@ -231,7 +231,7 @@ cases:
     expected:
       rule_action_type: ACTIVATE_ENERGY
       activate_energy_confirm: 1
-      desired_goal: HIGHGROUND_SCAN
+      desired_goal: SEARCH_AREA_A
 
   - name: periodic_supply_ammo_claim_holds_fire
     context:
@@ -280,7 +280,7 @@ cases:
         attack: 181000
     expected:
       tactical_state: ENGAGE
-      desired_goal: COMBAT_HOLD_A
+      desired_goal: CURRENT_HOLD
       desired_posture: MOVE
       posture_cmd_referee: 3
       fire_policy: AGGRESSIVE
@@ -294,7 +294,7 @@ cases:
       heat: 205
     expected:
       tactical_state: ENGAGE
-      desired_goal: COMBAT_HOLD_A
+      desired_goal: CURRENT_HOLD
       fire_policy: CONSERVATIVE
       heat_guard_active: false
 
@@ -380,7 +380,7 @@ cases:
       on_highground: true
     expected:
       tactical_state: SEARCH
-      desired_goal: HIGHGROUND_SCAN
+      desired_goal: SEARCH_AREA_A
       fire_policy: CONSERVATIVE
       spin_mode: ON
 

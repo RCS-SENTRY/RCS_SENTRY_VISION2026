@@ -9,6 +9,7 @@ namespace
 {
 std::uint8_t GoalIdToProtocol(const std::string& goal)
 {
+    if (goal == "CURRENT_HOLD") return SENTRY_GOAL_ID_INVALID;
     if (goal == "SAFE_HOLD") return SENTRY_GOAL_ID_SAFE_HOLD;
     if (goal == "WAIT_REVIVE") return SENTRY_GOAL_ID_WAIT_REVIVE;
     if (goal == "SAFE_RETREAT_A") return SENTRY_GOAL_ID_SAFE_RETREAT_A;
@@ -17,15 +18,8 @@ std::uint8_t GoalIdToProtocol(const std::string& goal)
     if (goal == "SUPPLY_RIGHT") return SENTRY_GOAL_ID_SUPPLY_RIGHT;
     if (goal == "FORTRESS_HOLD") return SENTRY_GOAL_ID_FORTRESS_HOLD;
     if (goal == "OUTPOST_HOLD") return SENTRY_GOAL_ID_OUTPOST_HOLD;
-    if (goal == "COMBAT_KITE_A") return SENTRY_GOAL_ID_COMBAT_KITE_A;
-    if (goal == "COMBAT_HOLD_A") return SENTRY_GOAL_ID_COMBAT_HOLD_A;
-    if (goal == "MID_PRESSURE") return SENTRY_GOAL_ID_MID_PRESSURE;
-    if (goal == "HIGHGROUND_PEEK") return SENTRY_GOAL_ID_HIGHGROUND_PEEK;
-    if (goal == "COMBAT_PUSH_A") return SENTRY_GOAL_ID_COMBAT_PUSH_A;
     if (goal == "SEARCH_AREA_A") return SENTRY_GOAL_ID_SEARCH_AREA_A;
     if (goal == "SEARCH_AREA_B") return SENTRY_GOAL_ID_SEARCH_AREA_B;
-    if (goal == "HIGHGROUND_SCAN") return SENTRY_GOAL_ID_HIGHGROUND_SCAN;
-    if (goal == "HIGHGROUND_CENTER") return SENTRY_GOAL_ID_HIGHGROUND_CENTER;
     if (goal == "MID_CROSS") return SENTRY_GOAL_ID_MID_CROSS;
     if (goal == "BASE_HOLD") return SENTRY_GOAL_ID_SAFE_HOLD;
     return SENTRY_GOAL_ID_INVALID;

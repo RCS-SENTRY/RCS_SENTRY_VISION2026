@@ -87,15 +87,16 @@ typedef enum
 } sentry_posture_e;
 
 /*
- * 开火策略。
- * 数值越大，表示越激进。
+ * 决策侧自瞄开关。
+ * 注意：这里不是自瞄栈内部火力等级。当前实车约定：
+ * 1=AUTOAIM_OFF，2=AUTOAIM_ON。0 仅用于硬安全/无有效意图。
  */
 typedef enum
 {
-    SENTRY_FIRE_POLICY_HOLD_FIRE = 0,
-    SENTRY_FIRE_POLICY_CONSERVATIVE = 1,
-    SENTRY_FIRE_POLICY_NORMAL = 2,
-    SENTRY_FIRE_POLICY_AGGRESSIVE = 3
+    SENTRY_FIRE_POLICY_HARD_OFF = 0,
+    SENTRY_FIRE_POLICY_AUTOAIM_OFF = 1,
+    SENTRY_FIRE_POLICY_AUTOAIM_ON = 2,
+    SENTRY_FIRE_POLICY_AUTOAIM_ON_RESERVED = 3
 } sentry_fire_policy_e;
 
 typedef enum
@@ -156,7 +157,7 @@ typedef struct SENTRY_PACKED
     /* executor 收口后的最终姿态目标，取值见 sentry_posture_e。 */
     uint8_t posture;
 
-    /* executor 收口后的最终开火策略，取值见 sentry_fire_policy_e。 */
+    /* executor 收口后的自瞄开关，取值见 sentry_fire_policy_e。 */
     uint8_t fire_policy;
 
     /* 小陀螺模式，取值见 sentry_spin_mode_e。 */

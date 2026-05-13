@@ -27,6 +27,7 @@ float AdviceBonus(const RobotContext& ctx, const std::string& goal_id)
 
 std::uint8_t GoalNameToProtocolId(const std::string& goal_id)
 {
+    if (goal_id == "CURRENT_HOLD") return 0;
     if (goal_id == "SAFE_HOLD") return 1;
     if (goal_id == "WAIT_REVIVE") return 2;
     if (goal_id == "SAFE_RETREAT_A") return 3;
@@ -35,15 +36,8 @@ std::uint8_t GoalNameToProtocolId(const std::string& goal_id)
     if (goal_id == "SUPPLY_RIGHT") return 6;
     if (goal_id == "FORTRESS_HOLD") return 7;
     if (goal_id == "OUTPOST_HOLD") return 8;
-    if (goal_id == "COMBAT_KITE_A") return 9;
-    if (goal_id == "COMBAT_HOLD_A") return 10;
-    if (goal_id == "MID_PRESSURE") return 11;
-    if (goal_id == "HIGHGROUND_PEEK") return 12;
-    if (goal_id == "COMBAT_PUSH_A") return 13;
     if (goal_id == "SEARCH_AREA_A") return 14;
     if (goal_id == "SEARCH_AREA_B") return 15;
-    if (goal_id == "HIGHGROUND_SCAN") return 16;
-    if (goal_id == "HIGHGROUND_CENTER") return 17;
     if (goal_id == "MID_CROSS") return 18;
     if (goal_id == "BASE_HOME") return 19;
     if (goal_id == "BASE_HOLD") return 20;
@@ -53,6 +47,35 @@ std::uint8_t GoalNameToProtocolId(const std::string& goal_id)
 std::uint64_t ElapsedSince(std::uint64_t now_ms, std::uint64_t then_ms)
 {
     return (then_ms == 0 || now_ms <= then_ms) ? 0 : (now_ms - then_ms);
+}
+
+std::string CurrentPatrolGoal(const RobotContext& ctx)
+{
+    if (ctx.patrol_goals.empty())
+    {
+        return "SEARCH_AREA_A";
+    }
+    const auto index = static_cast<std::size_t>(
+        std::clamp(ctx.patrol_goal_index, 0,
+                   static_cast<int>(ctx.patrol_goals.size()) - 1));
+    return ctx.patrol_goals[index];
+}
+
+bool TargetWithinEngageDistance(const RobotContext& ctx)
+{
+    const bool target_seen = ctx.autoaim_fire_ready || ctx.autoaim_tracking ||
+                             ctx.autoaim_has_target ||
+                             (ctx.enemy_in_view && ctx.enemy_confidence >= 0.45f);
+    const float target_distance =
+        ctx.autoaim_target_distance > 0.0f ? ctx.autoaim_target_distance : ctx.enemy_distance_m;
+    return target_seen && target_distance > 0.0f &&
+           target_distance <= ctx.engage_target_max_distance_m;
+}
+
+bool CanPreemptTacticalState(TacticalState state)
+{
+    return state == TacticalState::RETREAT || state == TacticalState::RESUPPLY ||
+           state == TacticalState::ENGAGE;
 }
 
 void SwitchToNextResupplyCandidate(RobotContext& ctx, const std::string& reason)
@@ -79,9 +102,7 @@ void SwitchToNextResupplyCandidate(RobotContext& ctx, const std::string& reason)
 
 SpinMode DecideSituationalSpinPreference(const RobotContext& ctx, std::string& reason)
 {
-    const float hp_ratio = SafeRatio(ctx.hp, ctx.hp_max);
-    const bool enemy_pressure = ctx.enemy_in_view && ctx.enemy_confidence >= 0.45f;
-    const bool strong_enemy_pressure = ctx.enemy_in_view && ctx.enemy_confidence >= 0.70f;
+    const bool target_pressure = TargetWithinEngageDistance(ctx);
 
     if (!ctx.match_started)
     {
@@ -109,63 +130,18 @@ SpinMode DecideSituationalSpinPreference(const RobotContext& ctx, std::string& r
         return SpinMode::OFF;
     }
 
-    if (ctx.llm_advice.valid && ctx.llm_advice.spin_preference == SpinMode::ON &&
-        ctx.llm_advice.confidence >= 0.75f)
+    if (target_pressure)
     {
-        reason = "外部建议明确启用小陀螺，且资源守卫未触发，采纳该偏好。";
+        reason = "检测到 5m 内自瞄目标或敌情压力，启动小陀螺并交给执行层保持。";
+        return SpinMode::ON;
+    }
+    if (ctx.under_attack)
+    {
+        reason = "检测到受击事件，启动小陀螺并交给执行层保持。";
         return SpinMode::ON;
     }
 
-    switch (ctx.tactical_state)
-    {
-        case TacticalState::RETREAT:
-            if (enemy_pressure || hp_ratio < 0.35f)
-            {
-                reason = "撤退或低血受压时优先开小陀螺，提升脱离过程的抗命中能力。";
-                return SpinMode::ON;
-            }
-            reason = "撤退态但当前没有明显敌情压力，暂不开小陀螺以保留机动余量。";
-            return SpinMode::OFF;
-        case TacticalState::RESUPPLY:
-            if (enemy_pressure || !ctx.is_disengaged)
-            {
-                reason = "补给路上仍有敌情或尚未脱战，开小陀螺保护转移。";
-                return SpinMode::ON;
-            }
-            reason = "已脱战补给且敌情不明显，关闭小陀螺节省底盘功率。";
-            return SpinMode::OFF;
-        case TacticalState::HOLD:
-            reason = "固守高价值区域时默认开小陀螺，降低静态防守被集火命中的概率。";
-            return SpinMode::ON;
-        case TacticalState::ENGAGE:
-            if (enemy_pressure)
-            {
-                reason = strong_enemy_pressure
-                             ? "交战目标置信度高，开小陀螺进行对抗。"
-                             : "已有可疑敌情，开小陀螺提高遭遇战容错。";
-                return SpinMode::ON;
-            }
-            reason = "交战态未形成可靠敌情，暂不开小陀螺。";
-            return SpinMode::OFF;
-        case TacticalState::SEARCH:
-            if (ctx.supercap_soc >= 0.18f)
-            {
-                reason = "搜索巡逻默认开小陀螺，兼顾扫视和防偷袭。";
-                return SpinMode::ON;
-            }
-            reason = "搜索态电容余量偏低，暂不开小陀螺。";
-            return SpinMode::OFF;
-        case TacticalState::REPOSITION:
-            if (enemy_pressure || ctx.supercap_soc >= 0.22f)
-            {
-                reason = "转位过程中开小陀螺，减少跨区移动时的暴露风险。";
-                return SpinMode::ON;
-            }
-            reason = "转位态但电容余量偏低且无敌情，暂不开小陀螺。";
-            return SpinMode::OFF;
-    }
-
-    reason = "未匹配到战术态，默认不开小陀螺。";
+    reason = "未遇到 5m 内目标且未受击，不主动启动小陀螺。";
     return SpinMode::OFF;
 }
 
@@ -196,6 +172,11 @@ public:
 
         const float hp_ratio = SafeRatio(ctx_->hp, ctx_->hp_max);
         const float heat_ratio = SafeRatio(ctx_->heat, ctx_->heat_limit);
+        const auto previous_state = ctx_->tactical_state;
+        if (ctx_->tactical_state_enter_ms == 0)
+        {
+            ctx_->tactical_state_enter_ms = ctx_->now_ms;
+        }
 
         // 优先级顺序尽量贴合 XML 中主树的语义设计：
         // 1. 生存压力与硬约束；
@@ -232,16 +213,30 @@ public:
             ctx_->tactical_reason =
                 "低血/低弹已进入补给闭环，优先级高于普通搜索和交战。";
         }
+        else if (hp_ratio < ctx_->hp_resupply_exit_ratio)
+        {
+            ctx_->tactical_state = TacticalState::RESUPPLY;
+            ctx_->tactical_reason =
+                "血量未恢复到健康阈值，优先回补给点直到血量补上。";
+        }
         else if ((ctx_->on_base || ctx_->on_fortress || ctx_->on_outpost) &&
                  !ctx_->enemy_in_view)
         {
             ctx_->tactical_state = TacticalState::HOLD;
             ctx_->tactical_reason = "当前已占据高价值据点，且没有必须切换目标的压力。";
         }
-        else if (ctx_->enemy_in_view && ctx_->enemy_confidence > 0.70f)
+        else if (ctx_->enemy_in_view && ctx_->enemy_confidence > 0.70f &&
+                 TargetWithinEngageDistance(*ctx_))
         {
             ctx_->tactical_state = TacticalState::ENGAGE;
-            ctx_->tactical_reason = "敌方目标置信度足够高，可以明确进入交战态。";
+            ctx_->tactical_reason =
+                "敌方目标置信度足够高且距离在 7m 内，保持当前位置/当前目标点进入交战。";
+        }
+        else if (ctx_->enemy_in_view && ctx_->enemy_confidence > 0.70f)
+        {
+            ctx_->tactical_state = TacticalState::REPOSITION;
+            ctx_->tactical_reason =
+                "发现目标但距离超过 7m 交战阈值，继续导航到候选点并保持扫描。";
         }
         else if (ctx_->llm_advice.valid && ctx_->llm_advice.confidence >= 0.70f)
         {
@@ -259,6 +254,28 @@ public:
         {
             ctx_->tactical_state = TacticalState::SEARCH;
             ctx_->tactical_reason = "没有更紧急的目标或约束，继续执行搜索侦察。";
+        }
+
+        const auto proposed_state = ctx_->tactical_state;
+        const auto proposed_reason = ctx_->tactical_reason;
+        if (proposed_state != previous_state)
+        {
+            const auto held_ms = ElapsedSince(ctx_->now_ms, ctx_->tactical_state_enter_ms);
+            const bool can_switch =
+                held_ms >= ctx_->tactical_state_min_hold_ms ||
+                CanPreemptTacticalState(proposed_state);
+            if (can_switch)
+            {
+                ctx_->tactical_state_enter_ms = ctx_->now_ms;
+            }
+            else
+            {
+                ctx_->tactical_state = previous_state;
+                ctx_->tactical_reason =
+                    proposed_reason + " 但战术态最小保持窗未结束，继续保持 " +
+                    TacticalStateToString(previous_state) + "，remaining_ms=" +
+                    std::to_string(ctx_->tactical_state_min_hold_ms - held_ms) + "。";
+            }
         }
 
         setOutput("tactical_state", std::string(TacticalStateToString(ctx_->tactical_state)));
@@ -482,8 +499,8 @@ public:
     }
 };
 
-// 交战时的火力策略更新。
-// 这里综合考虑了弹药、热量和目标置信度，是交战态里最值得继续打磨的节点之一。
+// 交战时的自瞄开关更新。
+// fire_policy 在下位机协议里作为自瞄开关：1=OFF，2=ON。
 class UpdateCombatFirePolicyNode : public ContextSyncActionNode
 {
 public:
@@ -493,30 +510,8 @@ public:
     {
         std::lock_guard<std::mutex> lock(ctx_->mtx);
 
-        const float heat_ratio = SafeRatio(ctx_->heat, ctx_->heat_limit);
-        if (ctx_->ammo_17 <= 0)
-        {
-            // 没弹药时直接强制停火。
-            ctx_->preferred_fire_policy = FirePolicy::HOLD_FIRE;
-        }
-        else if (ctx_->llm_advice.valid && ctx_->llm_advice.fire_policy == FirePolicy::AGGRESSIVE &&
-                 heat_ratio < 0.65f)
-        {
-            // 外部建议只在热量尚可时，才有机会把火力推高。
-            ctx_->preferred_fire_policy = FirePolicy::AGGRESSIVE;
-        }
-        else if (heat_ratio < 0.55f && ctx_->enemy_confidence > 0.85f)
-        {
-            ctx_->preferred_fire_policy = FirePolicy::AGGRESSIVE;
-        }
-        else if (heat_ratio < 0.75f)
-        {
-            ctx_->preferred_fire_policy = FirePolicy::NORMAL;
-        }
-        else
-        {
-            ctx_->preferred_fire_policy = FirePolicy::CONSERVATIVE;
-        }
+        ctx_->preferred_fire_policy =
+            TargetWithinEngageDistance(*ctx_) ? FirePolicy::NORMAL : FirePolicy::CONSERVATIVE;
 
         return BT::NodeStatus::SUCCESS;
     }
@@ -648,9 +643,8 @@ public:
             ctx_->resupply_rfid_confirmed = hold_ok;
             ctx_->resupply_waiting_recovery = hold_ok;
             ctx_->resupply_reason =
-                ctx_->on_base
-                    ? "RFID 确认在基地恢复点，停留等待血量/弹量恢复。"
-                    : "RFID 确认在补给区，停留等待血量/弹量恢复。";
+                "RFID 确认恢复点，来源=" + ctx_->recovery_confirmed_by +
+                "，停留等待血量/弹量恢复。";
             AddGoalCandidate(*ctx_, ctx_->resupply_goal_current, 2.0f,
                              ctx_->resupply_reason);
             return BT::NodeStatus::SUCCESS;
@@ -712,16 +706,9 @@ public:
     BT::NodeStatus tick() override
     {
         std::lock_guard<std::mutex> lock(ctx_->mtx);
-        AddGoalCandidate(*ctx_, "BASE_HOLD",
-                         (ctx_->on_base ? 1.08f : 0.55f) + AdviceBonus(*ctx_, "BASE_HOLD"),
-                         "小场地或基地 RFID 可用时，基地增益点可作为保守固守点。");
-        AddGoalCandidate(*ctx_, "FORTRESS_HOLD",
-                         (ctx_->on_fortress ? 1.10f : 0.95f) +
-                             AdviceBonus(*ctx_, "FORTRESS_HOLD"),
-                         "若当前已在堡垒区域，优先固守该位置。");
-        AddGoalCandidate(*ctx_, "OUTPOST_HOLD",
-                         (ctx_->on_outpost ? 1.05f : 0.80f) + AdviceBonus(*ctx_, "OUTPOST_HOLD"),
-                         "当堡垒不是首要目标时，可转为固守前哨点。");
+        const auto goal = CurrentPatrolGoal(*ctx_);
+        AddGoalCandidate(*ctx_, goal, 1.00f + AdviceBonus(*ctx_, goal),
+                         "HOLD 态也沿用固定巡航防守序列：" + goal + "。");
         return BT::NodeStatus::SUCCESS;
     }
 };
@@ -735,33 +722,9 @@ public:
     {
         std::lock_guard<std::mutex> lock(ctx_->mtx);
 
-        // 这里按敌我距离做了一个很粗的分段。
-        // 真正实战里，你可以继续引入更多特征，例如：
-        // 敌方类型、掩体情况、己方血量、炮口朝向、地形可逃逸性等。
-        if (ctx_->enemy_distance_m < 3.0f)
-        {
-            AddGoalCandidate(*ctx_, "COMBAT_KITE_A", 1.00f + AdviceBonus(*ctx_, "COMBAT_KITE_A"),
-                             "近距离交战时，更适合边打边拉扯以提升生存率。");
-            AddGoalCandidate(*ctx_, "COMBAT_HOLD_A",
-                             0.82f + AdviceBonus(*ctx_, "COMBAT_HOLD_A"),
-                             "若机动空间不足，则退而采用据点卡角方案。");
-        }
-        else if (ctx_->enemy_distance_m < 8.0f)
-        {
-            AddGoalCandidate(*ctx_, "COMBAT_HOLD_A",
-                             1.00f + AdviceBonus(*ctx_, "COMBAT_HOLD_A"),
-                             "中距离交战时，优先选择稳定火力通道。");
-            AddGoalCandidate(*ctx_, "MID_PRESSURE", 0.88f + AdviceBonus(*ctx_, "MID_PRESSURE"),
-                             "当敌方已被压制时，中路施压路线也具备可行性。");
-        }
-        else
-        {
-            AddGoalCandidate(*ctx_, "HIGHGROUND_PEEK",
-                             1.00f + AdviceBonus(*ctx_, "HIGHGROUND_PEEK"),
-                             "远距离接触时，更适合借助高点掩体进行探头输出。");
-            AddGoalCandidate(*ctx_, "COMBAT_PUSH_A", 0.86f + AdviceBonus(*ctx_, "COMBAT_PUSH_A"),
-                             "若掩体条件不足，可将推进路线作为后续选择。");
-        }
+        AddGoalCandidate(
+            *ctx_, "CURRENT_HOLD", 1.00f,
+            "交战态不切换 COMBAT 交战点；发布 goal_id=0 停止导航，原地小陀螺由自瞄锁敌。");
 
         return BT::NodeStatus::SUCCESS;
     }
@@ -775,14 +738,9 @@ public:
     BT::NodeStatus tick() override
     {
         std::lock_guard<std::mutex> lock(ctx_->mtx);
-        AddGoalCandidate(*ctx_, "SEARCH_AREA_A", 1.00f + AdviceBonus(*ctx_, "SEARCH_AREA_A"),
-                         "主搜索路线用于维持更广的地图覆盖。");
-        AddGoalCandidate(*ctx_, "SEARCH_AREA_B", 0.84f + AdviceBonus(*ctx_, "SEARCH_AREA_B"),
-                         "次搜索路线用于避免重复扫图过于单一。");
-        AddGoalCandidate(*ctx_, "HIGHGROUND_SCAN",
-                         (ctx_->on_highground ? 1.05f : 0.78f) +
-                             AdviceBonus(*ctx_, "HIGHGROUND_SCAN"),
-                         "一旦已占据高点，就优先利用高点进行扫描观察。");
+        const auto goal = CurrentPatrolGoal(*ctx_);
+        AddGoalCandidate(*ctx_, goal, 1.00f + AdviceBonus(*ctx_, goal),
+                         "按固定顺序巡航防守，当前目标=" + goal + "。");
         return BT::NodeStatus::SUCCESS;
     }
 };
@@ -795,11 +753,9 @@ public:
     BT::NodeStatus tick() override
     {
         std::lock_guard<std::mutex> lock(ctx_->mtx);
-        AddGoalCandidate(*ctx_, "HIGHGROUND_CENTER",
-                         1.00f + AdviceBonus(*ctx_, "HIGHGROUND_CENTER"),
-                         "转位子树优先争取更好的中心视野和射界几何。");
-        AddGoalCandidate(*ctx_, "MID_CROSS", 0.86f + AdviceBonus(*ctx_, "MID_CROSS"),
-                         "若中心区域竞争激烈，则跨区转移作为备选。");
+        const auto goal = CurrentPatrolGoal(*ctx_);
+        AddGoalCandidate(*ctx_, goal, 1.00f + AdviceBonus(*ctx_, goal),
+                         "REPOSITION 态沿用固定巡航防守序列，当前目标=" + goal + "。");
         return BT::NodeStatus::SUCCESS;
     }
 };

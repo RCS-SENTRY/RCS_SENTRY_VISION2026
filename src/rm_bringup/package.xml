@@ -17,6 +17,7 @@
   <exec_depend>nav2_bt_navigator</exec_depend>
   <exec_depend>nav2_common</exec_depend>
   <exec_depend>nav2_controller</exec_depend>
+  <exec_depend>nav2_msgs</exec_depend>
   <exec_depend>nav2_lifecycle_manager</exec_depend>
   <exec_depend>nav2_map_server</exec_depend>
   <exec_depend>nav2_planner</exec_depend>
@@ -40,6 +41,7 @@
   <exec_depend>rm_interfaces</exec_depend>
   <exec_depend>rm_sentry_decision</exec_depend>
   <exec_depend>rm_vision</exec_depend>
+  <exec_depend>nav_msgs</exec_depend>
   <exec_depend>sensor_scan_generation</exec_depend>
   <exec_depend>sentry_bt</exec_depend>
   <exec_depend>slam_toolbox</exec_depend>
@@ -50,6 +52,7 @@
   <exec_depend>sensor_msgs_py</exec_depend>
   <depend>std_msgs</depend>
   <exec_depend>tf2_ros</exec_depend>
+  <exec_depend>visualization_msgs</exec_depend>
 
   <export>
     <build_type>ament_cmake</build_type>

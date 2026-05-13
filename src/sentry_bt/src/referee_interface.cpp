@@ -4,6 +4,7 @@
 #include <chrono>
 #include <cmath>
 #include <string>
+#include <vector>
 
 namespace
 {
@@ -18,6 +19,35 @@ constexpr int kDefaultOpeningAmmo17 = 200;
 bool HasBit(std::uint32_t value, unsigned bit)
 {
     return ((value >> bit) & 0x1U) != 0U;
+}
+
+bool HasBit8(std::uint8_t value, unsigned bit)
+{
+    return ((value >> bit) & 0x1U) != 0U;
+}
+
+bool AnyBit(std::uint32_t value, const std::vector<int64_t>& bits)
+{
+    for (const auto bit : bits)
+    {
+        if (bit >= 0 && bit < 32 && HasBit(value, static_cast<unsigned>(bit)))
+        {
+            return true;
+        }
+    }
+    return false;
+}
+
+bool AnyBit8(std::uint8_t value, const std::vector<int64_t>& bits)
+{
+    for (const auto bit : bits)
+    {
+        if (bit >= 0 && bit < 8 && HasBit8(value, static_cast<unsigned>(bit)))
+        {
+            return true;
+        }
+    }
+    return false;
 }
 
 std::uint64_t SteadyNowMs()
@@ -60,12 +90,16 @@ struct MergedSnapshot
     bool enemy_in_view{false};
     float enemy_confidence{0.0f};
     float enemy_distance_m{0.0f};
+    bool under_attack{false};
+    std::uint8_t armor_id{0};
+    std::uint8_t hp_deduction_reason{0};
     bool on_supply{false};
     bool on_base{false};
     bool on_fortress{false};
     bool on_outpost{false};
     bool on_highground{false};
     std::uint32_t rfid_status{0};
+    std::uint8_t rfid_status_2{0};
     std::uint8_t recovery_buff{0};
     Posture reported_posture{Posture::MOVE};
     Posture current_posture{Posture::MOVE};
@@ -139,6 +173,31 @@ void RefereeInterface::ConfigureDecisionStatusInputs(
     std::lock_guard<std::mutex> lock(mutex_);
     autoaim_status_timeout_ms_ = std::max<std::uint64_t>(1, autoaim_status_timeout_ms);
     nav_status_timeout_ms_ = std::max<std::uint64_t>(1, nav_status_timeout_ms);
+}
+
+void RefereeInterface::ConfigureRfidBits(
+    const std::vector<int64_t>& base_bits,
+    const std::vector<int64_t>& supply_bits,
+    const std::vector<int64_t>& fortress_bits,
+    const std::vector<int64_t>& outpost_bits,
+    const std::vector<int64_t>& highground_bits,
+    const std::vector<int64_t>& base_bits_2,
+    const std::vector<int64_t>& supply_bits_2,
+    const std::vector<int64_t>& fortress_bits_2,
+    const std::vector<int64_t>& outpost_bits_2,
+    const std::vector<int64_t>& highground_bits_2)
+{
+    std::lock_guard<std::mutex> lock(mutex_);
+    rfid_base_bits_ = base_bits;
+    rfid_supply_bits_ = supply_bits;
+    rfid_fortress_bits_ = fortress_bits;
+    rfid_outpost_bits_ = outpost_bits;
+    rfid_highground_bits_ = highground_bits;
+    rfid_base_bits_2_ = base_bits_2;
+    rfid_supply_bits_2_ = supply_bits_2;
+    rfid_fortress_bits_2_ = fortress_bits_2;
+    rfid_outpost_bits_2_ = outpost_bits_2;
+    rfid_highground_bits_2_ = highground_bits_2;
 }
 
 void RefereeInterface::UpdateFromStatus(const rm_interfaces::msg::GimbalStatus& status)
@@ -347,6 +406,8 @@ void RefereeInterface::SyncToContext(RobotContext& ctx)
     snapshot.chassis_power_limit =
         std::max(1.0f, static_cast<float>(latest_status_.chassis_power_limit));
     snapshot.supercap_soc = std::clamp(latest_status_.remain_energy / 100.0f, 0.0f, 1.0f);
+    snapshot.armor_id = latest_status_.armor_id;
+    snapshot.hp_deduction_reason = latest_status_.hp_deduction_reason;
     snapshot.can_activate_energy_mechanism =
         latest_status_.can_activate_energy_mechanism != 0;
 
@@ -408,15 +469,20 @@ void RefereeInterface::SyncToContext(RobotContext& ctx)
     else
     {
         const std::uint32_t rfid = latest_status_.rfid_status;
+        const std::uint8_t rfid_2 = latest_status_.rfid_status_2;
         snapshot.rfid_status = rfid;
+        snapshot.rfid_status_2 = rfid_2;
         snapshot.recovery_buff = latest_status_.recovery_buff;
-        snapshot.on_base = HasBit(rfid, 0);
-        snapshot.on_supply = HasBit(rfid, 19) || HasBit(rfid, 20);
-        snapshot.on_fortress = HasBit(rfid, 17);
-        snapshot.on_outpost = HasBit(rfid, 18);
-        snapshot.on_highground = HasBit(rfid, 1) || HasBit(rfid, 2) || HasBit(rfid, 3) ||
-                                 HasBit(rfid, 4) || HasBit(rfid, 9) || HasBit(rfid, 10) ||
-                                 HasBit(rfid, 11) || HasBit(rfid, 12);
+        snapshot.on_base = AnyBit(rfid, rfid_base_bits_) ||
+                           AnyBit8(rfid_2, rfid_base_bits_2_);
+        snapshot.on_supply = AnyBit(rfid, rfid_supply_bits_) ||
+                             AnyBit8(rfid_2, rfid_supply_bits_2_);
+        snapshot.on_fortress = AnyBit(rfid, rfid_fortress_bits_) ||
+                               AnyBit8(rfid_2, rfid_fortress_bits_2_);
+        snapshot.on_outpost = AnyBit(rfid, rfid_outpost_bits_) ||
+                              AnyBit8(rfid_2, rfid_outpost_bits_2_);
+        snapshot.on_highground = AnyBit(rfid, rfid_highground_bits_) ||
+                                 AnyBit8(rfid_2, rfid_highground_bits_2_);
         if (autoaim_status_fresh)
         {
             snapshot.autoaim_has_target = latest_autoaim_target_status_.has_target;
@@ -429,7 +495,7 @@ void RefereeInterface::SyncToContext(RobotContext& ctx)
             raw_enemy_confidence =
                 latest_autoaim_target_status_.fire_ready ? 0.90f
                 : latest_autoaim_target_status_.tracking ? 0.75f
-                : latest_autoaim_target_status_.has_target ? 0.60f
+                : latest_autoaim_target_status_.has_target ? 0.72f
                                                            : 0.0f;
             raw_enemy_distance_m = snapshot.autoaim_target_distance;
         }
@@ -646,12 +712,16 @@ void RefereeInterface::SyncToContext(RobotContext& ctx)
     ctx.enemy_in_view = snapshot.enemy_in_view;
     ctx.enemy_confidence = snapshot.enemy_confidence;
     ctx.enemy_distance_m = snapshot.enemy_distance_m;
+    ctx.armor_id = snapshot.armor_id;
+    ctx.hp_deduction_reason = snapshot.hp_deduction_reason;
+    ctx.under_attack = snapshot.under_attack;
     ctx.on_supply = snapshot.on_supply;
     ctx.on_base = snapshot.on_base;
     ctx.on_fortress = snapshot.on_fortress;
     ctx.on_outpost = snapshot.on_outpost;
     ctx.on_highground = snapshot.on_highground;
     ctx.rfid_status = snapshot.rfid_status;
+    ctx.rfid_status_2 = snapshot.rfid_status_2;
     ctx.recovery_buff = snapshot.recovery_buff;
     ctx.reported_posture = snapshot.reported_posture;
     ctx.current_posture = snapshot.current_posture;

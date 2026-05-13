@@ -41,11 +41,11 @@ std::string DefaultGoalForState(TacticalState state)
         case TacticalState::HOLD:
             return "FORTRESS_HOLD";
         case TacticalState::ENGAGE:
-            return "COMBAT_HOLD_A";
+            return "CURRENT_HOLD";
         case TacticalState::SEARCH:
             return "SEARCH_AREA_A";
         case TacticalState::REPOSITION:
-            return "HIGHGROUND_CENTER";
+            return "MID_CROSS";
     }
     return "SAFE_HOLD";
 }
@@ -70,24 +70,10 @@ std::string GoalNameFromProtocolId(std::uint8_t goal_id)
             return "FORTRESS_HOLD";
         case SENTRY_GOAL_ID_OUTPOST_HOLD:
             return "OUTPOST_HOLD";
-        case SENTRY_GOAL_ID_COMBAT_KITE_A:
-            return "COMBAT_KITE_A";
-        case SENTRY_GOAL_ID_COMBAT_HOLD_A:
-            return "COMBAT_HOLD_A";
-        case SENTRY_GOAL_ID_MID_PRESSURE:
-            return "MID_PRESSURE";
-        case SENTRY_GOAL_ID_HIGHGROUND_PEEK:
-            return "HIGHGROUND_PEEK";
-        case SENTRY_GOAL_ID_COMBAT_PUSH_A:
-            return "COMBAT_PUSH_A";
         case SENTRY_GOAL_ID_SEARCH_AREA_A:
             return "SEARCH_AREA_A";
         case SENTRY_GOAL_ID_SEARCH_AREA_B:
             return "SEARCH_AREA_B";
-        case SENTRY_GOAL_ID_HIGHGROUND_SCAN:
-            return "HIGHGROUND_SCAN";
-        case SENTRY_GOAL_ID_HIGHGROUND_CENTER:
-            return "HIGHGROUND_CENTER";
         case SENTRY_GOAL_ID_MID_CROSS:
             return "MID_CROSS";
         case SENTRY_GOAL_ID_BASE_HOME:
@@ -97,6 +83,20 @@ std::string GoalNameFromProtocolId(std::uint8_t goal_id)
         default:
             return {};
     }
+}
+
+std::uint64_t ElapsedMs(std::uint64_t now_ms, std::uint64_t since_ms)
+{
+    return (since_ms == 0 || now_ms < since_ms) ? 0 : (now_ms - since_ms);
+}
+
+bool ElapsedEnough(std::uint64_t now_ms, std::uint64_t since_ms, std::uint64_t required_ms)
+{
+    if (required_ms == 0 || since_ms == 0 || now_ms < since_ms)
+    {
+        return true;
+    }
+    return (now_ms - since_ms) >= required_ms;
 }
 
 bool DwellCanHoldGoal(const RobotContext& ctx)
@@ -189,6 +189,93 @@ Posture ExplicitPostureTarget(const RobotContext& ctx)
     return (ctx.current_posture == Posture::DEFENSE) ? Posture::ATTACK : Posture::DEFENSE;
 }
 
+InternalMotionState InternalMotionFromPosture(Posture posture)
+{
+    switch (posture)
+    {
+        case Posture::ATTACK:
+            return InternalMotionState::ATTACK;
+        case Posture::DEFENSE:
+            return InternalMotionState::DEFENSE;
+        case Posture::MOVE:
+            return InternalMotionState::NAV;
+    }
+    return InternalMotionState::NAV;
+}
+
+InternalMotionState InternalMotionFromDecision(const RobotContext& ctx, Posture posture)
+{
+    if (posture == Posture::ATTACK)
+    {
+        return InternalMotionState::ATTACK;
+    }
+    if (posture == Posture::DEFENSE)
+    {
+        return InternalMotionState::DEFENSE;
+    }
+
+    switch (ctx.tactical_state)
+    {
+        case TacticalState::RETREAT:
+            return InternalMotionState::RETREAT;
+        case TacticalState::RESUPPLY:
+            return InternalMotionState::RESUPPLY;
+        case TacticalState::ENGAGE:
+            return InternalMotionState::ATTACK;
+        case TacticalState::HOLD:
+            return InternalMotionState::DEFENSE;
+        case TacticalState::SEARCH:
+        case TacticalState::REPOSITION:
+            return InternalMotionState::NAV;
+    }
+    return InternalMotionState::NAV;
+}
+
+bool InternalMotionUsesChassisNavigation(InternalMotionState state)
+{
+    return state == InternalMotionState::NAV ||
+           state == InternalMotionState::RESUPPLY ||
+           state == InternalMotionState::RETREAT;
+}
+
+bool InternalMotionUsesCombatOutput(InternalMotionState state)
+{
+    return state == InternalMotionState::ATTACK ||
+           state == InternalMotionState::DEFENSE;
+}
+
+void ApplyInternalMotionLatch(RobotContext& ctx, InternalMotionState proposed, bool allow_preempt)
+{
+    if (!ctx.internal_motion_initialized)
+    {
+        ctx.internal_motion_initialized = true;
+        ctx.internal_motion_latched = proposed;
+        ctx.internal_motion_last_change_ms = ctx.now_ms;
+        ctx.desired_posture = InternalMotionToRefereePosture(proposed);
+        return;
+    }
+
+    if (proposed != ctx.internal_motion_latched)
+    {
+        const auto held_ms = ElapsedMs(ctx.now_ms, ctx.internal_motion_last_change_ms);
+        if (allow_preempt || held_ms >= ctx.internal_motion_min_hold_ms)
+        {
+            ctx.internal_motion_latched = proposed;
+            ctx.internal_motion_last_change_ms = ctx.now_ms;
+        }
+        else
+        {
+            ctx.posture_reason +=
+                " 内部运动态锁存中，继续保持 " +
+                std::string(InternalMotionStateToString(ctx.internal_motion_latched)) +
+                "，remaining_ms=" +
+                std::to_string(ctx.internal_motion_min_hold_ms - held_ms) + "。";
+        }
+    }
+
+    ctx.desired_posture = InternalMotionToRefereePosture(ctx.internal_motion_latched);
+}
+
 Posture SelectPostureWithDebuffAwareness(const RobotContext& ctx, std::string& reason)
 {
     struct Candidate
@@ -264,36 +351,38 @@ public:
 
         if (ctx_->is_dead && ctx_->dead_return_home_active && ctx_->dead_chassis_can_move)
         {
-            ctx_->desired_posture = Posture::MOVE;
             ctx_->posture_reason = "死亡回基地硬任务启用，姿态强制 MOVE。";
+            ApplyInternalMotionLatch(*ctx_, InternalMotionState::NAV, true);
             return BT::NodeStatus::SUCCESS;
         }
 
-        if (ctx_->is_dead || !ctx_->referee_link_fresh || !ctx_->match_started)
+        if (ctx_->is_dead || !ctx_->referee_link_fresh || !ctx_->match_started ||
+            ctx_->need_emergency_safety)
         {
             // 死亡时不应继续切姿态，保持当前值即可。
-            ctx_->desired_posture = ctx_->current_posture;
             ctx_->posture_reason = ctx_->is_dead
                                        ? "死亡状态下冻结姿态输出，保持当前确认姿态。"
                                        : (!ctx_->referee_link_fresh
                                               ? "输入链路超时，冻结姿态输出并等待状态恢复。"
                                               : "比赛未开始，冻结姿态输出并保持待机。");
+            ApplyInternalMotionLatch(*ctx_, InternalMotionFromPosture(ctx_->current_posture), true);
             return BT::NodeStatus::SUCCESS;
         }
 
         if (ctx_->need_emergency_safety && ctx_->pending_posture_target != Posture::MOVE)
         {
-            ctx_->desired_posture = Posture::MOVE;
             ctx_->posture_reason =
                 "紧急安全分支已接管，忽略非移动姿态的待确认目标，先按 MOVE 输出。";
+            ApplyInternalMotionLatch(*ctx_, InternalMotionState::NAV, true);
             return BT::NodeStatus::SUCCESS;
         }
 
         if (ctx_->posture_switch_pending)
         {
-            ctx_->desired_posture = ctx_->pending_posture_target;
             ctx_->posture_reason = std::string("已有姿态切换待反馈确认，继续等待目标姿态 ") +
                                    PostureToString(ctx_->pending_posture_target) + " 生效。";
+            ApplyInternalMotionLatch(
+                *ctx_, InternalMotionFromPosture(ctx_->pending_posture_target), false);
             return BT::NodeStatus::SUCCESS;
         }
 
@@ -304,16 +393,30 @@ public:
             ctx_->posture_reason = std::string("当前存在显式姿态切换请求，直接请求切换到 ") +
                                    PostureToString(selected_posture) + "。";
         }
-        else if (ctx_->nav_goal_reached && ctx_->tactical_state == TacticalState::HOLD)
-        {
-            selected_posture = ctx_->hold_reached_posture;
-            ctx_->posture_reason = std::string("导航目标已到达，HOLD 态按参数切到 ") +
-                                   PostureToString(selected_posture) + "。";
-        }
-        else if (ctx_->nav_goal_reached && ctx_->tactical_state == TacticalState::ENGAGE)
+        else if (ctx_->tactical_state == TacticalState::ENGAGE)
         {
             selected_posture = Posture::ATTACK;
-            ctx_->posture_reason = "导航目标已到达且处于 ENGAGE 态，切到 ATTACK 姿态。";
+            ctx_->posture_reason =
+                "处于 ENGAGE 态，切到 ATTACK 姿态；导航目标会被 CURRENT_HOLD 停止。";
+        }
+        else if ((ctx_->dwell_active && !ctx_->dwell_complete) ||
+                 (ctx_->nav_goal_reached &&
+                  (ctx_->tactical_state == TacticalState::HOLD ||
+                   ctx_->tactical_state == TacticalState::SEARCH ||
+                   ctx_->tactical_state == TacticalState::REPOSITION)))
+        {
+            selected_posture = ctx_->tactical_state == TacticalState::HOLD
+                                   ? ctx_->hold_reached_posture
+                                   : Posture::DEFENSE;
+            ctx_->posture_reason = std::string("已到达/等效到达战术点，进入驻留防守姿态 ") +
+                                   PostureToString(selected_posture) + "。";
+        }
+        else if (ctx_->nav_goal_active && !ctx_->nav_goal_reached &&
+                 ctx_->tactical_state != TacticalState::ENGAGE)
+        {
+            selected_posture = Posture::MOVE;
+            ctx_->posture_reason =
+                "导航仍在执行且未到点，非 ENGAGE 态强制 MOVE，禁止路上切防御/攻击导致小陀螺。";
         }
         else if (!ctx_->nav_goal_reached && IsMotionTacticalState(ctx_->tactical_state))
         {
@@ -327,13 +430,20 @@ public:
         }
 
         // 冷却期未结束时，不允许采纳新的 preferred_posture。
-        ctx_->desired_posture =
+        const auto proposed_posture =
             ctx_->posture_cooldown_guard_active ? ctx_->current_posture : selected_posture;
         if (ctx_->posture_cooldown_guard_active && selected_posture != ctx_->current_posture)
         {
             ctx_->posture_reason +=
                 " 但姿态切换仍在冷却期，暂时维持当前姿态等待冷却结束。";
         }
+        const bool navigation_move_preempt =
+            proposed_posture == Posture::MOVE && ctx_->nav_goal_active && !ctx_->nav_goal_reached;
+        const bool engage_attack_preempt =
+            proposed_posture == Posture::ATTACK && ctx_->tactical_state == TacticalState::ENGAGE;
+        ApplyInternalMotionLatch(
+            *ctx_, InternalMotionFromDecision(*ctx_, proposed_posture),
+            navigation_move_preempt || engage_attack_preempt);
         if (ctx_->desired_posture != ctx_->current_posture && ctx_->posture_cooldown_ok)
         {
             ctx_->posture_cmd_referee = PostureToProtocol(ctx_->desired_posture);
@@ -343,9 +453,8 @@ public:
     }
 };
 
-// 火力执行收口节点。
-// 这是执行层里最像“安全阀”的节点：
-// 先看 preferred_fire_policy，再根据热量、弹药、规则动作进一步收紧。
+// 自瞄开关执行收口节点。
+// fire_policy 下发给下位机作为自瞄开关：1=OFF，2=ON。
 class ApplyFireDecisionNode : public ContextSyncActionNode
 {
 public:
@@ -358,54 +467,53 @@ public:
         if (ctx_->is_dead || !ctx_->referee_link_fresh || !ctx_->match_started)
         {
             ctx_->desired_fire_policy = FirePolicy::HOLD_FIRE;
+            ctx_->fire_filtered_policy = FirePolicy::HOLD_FIRE;
+            ctx_->fire_policy_enable_since_ms = 0;
+            ctx_->fire_policy_disable_since_ms = 0;
             return BT::NodeStatus::SUCCESS;
         }
 
-        FirePolicy policy = ctx_->preferred_fire_policy;
-        if (ctx_->nav_goal_reached && ctx_->tactical_state == TacticalState::HOLD)
-        {
-            policy = FirePolicy::NORMAL;
-        }
-        else if (ctx_->nav_goal_reached && ctx_->tactical_state == TacticalState::ENGAGE)
-        {
-            policy = ClampFirePolicy(
-                std::max(policy, FirePolicy::NORMAL,
-                         [](FirePolicy lhs, FirePolicy rhs) {
-                             return static_cast<int>(lhs) < static_cast<int>(rhs);
-                         }),
-                FirePolicy::AGGRESSIVE);
-        }
-        else if (!ctx_->nav_goal_reached && IsMotionTacticalState(ctx_->tactical_state))
-        {
-            policy = ctx_->enemy_in_view ? FirePolicy::CONSERVATIVE : FirePolicy::HOLD_FIRE;
-        }
-        if (ctx_->heat_guard_active || ctx_->ammo_17 <= 0 ||
+        const bool hard_disable =
+            ctx_->need_emergency_safety ||
+            ctx_->need_supply ||
             ctx_->rule_action_type == RuleActionType::EXCHANGE_AMMO_AT_POINT ||
-            ctx_->rule_action_type == RuleActionType::CLAIM_PERIODIC_AMMO)
+            ctx_->rule_action_type == RuleActionType::CLAIM_PERIODIC_AMMO;
+        const bool combat_internal =
+            InternalMotionUsesCombatOutput(ctx_->internal_motion_latched);
+        const bool request_on = combat_internal && !hard_disable;
+
+        if (InternalMotionUsesChassisNavigation(ctx_->internal_motion_latched) || hard_disable)
         {
-            // 这些情况都意味着“当前不适合开火”。
-            policy = FirePolicy::HOLD_FIRE;
+            ctx_->desired_fire_policy = FirePolicy::CONSERVATIVE;
+            ctx_->fire_filtered_policy = FirePolicy::CONSERVATIVE;
+            ctx_->fire_policy_enable_since_ms = 0;
+            ctx_->fire_policy_disable_since_ms = ctx_->now_ms;
+            ctx_->fire_policy_last_change_ms = ctx_->now_ms;
+            return BT::NodeStatus::SUCCESS;
         }
-        else
+        if (request_on)
         {
-            // 没有强制停火时，再按照资源压力对火力等级做上限裁剪。
-            if (ctx_->ammo_guard_active)
+            ctx_->desired_fire_policy = FirePolicy::NORMAL;
+            if (ctx_->fire_filtered_policy != FirePolicy::NORMAL)
             {
-                policy = ClampFirePolicy(policy, FirePolicy::CONSERVATIVE);
+                ctx_->fire_policy_last_change_ms = ctx_->now_ms;
             }
-            if (ctx_->power_guard_active)
-            {
-                policy = ClampFirePolicy(policy, FirePolicy::CONSERVATIVE);
-            }
+            ctx_->fire_filtered_policy = FirePolicy::NORMAL;
+            ctx_->fire_policy_enable_since_ms = ctx_->now_ms;
+            ctx_->fire_policy_disable_since_ms = 0;
+            return BT::NodeStatus::SUCCESS;
         }
 
-        ctx_->desired_fire_policy = policy;
+        ctx_->desired_fire_policy = FirePolicy::CONSERVATIVE;
+        ctx_->fire_filtered_policy = FirePolicy::CONSERVATIVE;
+        ctx_->fire_policy_enable_since_ms = 0;
+        ctx_->fire_policy_disable_since_ms = ctx_->now_ms;
         return BT::NodeStatus::SUCCESS;
     }
 };
 
 // 小陀螺执行收口节点。
-// 如果已经死亡，或者功率/超级电容受限，就直接关掉旋转。
+// 小陀螺只由“目标保持窗”或“受击保持窗”驱动，窗口内保持旋转。
 class ApplySpinDecisionNode : public ContextSyncActionNode
 {
 public:
@@ -416,28 +524,181 @@ public:
         std::lock_guard<std::mutex> lock(ctx_->mtx);
 
         if (ctx_->is_dead || !ctx_->referee_link_fresh || !ctx_->match_started ||
-            ctx_->power_guard_active || ctx_->supercap_guard_active)
+            ctx_->need_emergency_safety || ctx_->need_supply)
         {
+            const bool was_on = ctx_->spin_filtered_mode == SpinMode::ON ||
+                                ctx_->desired_spin_mode == SpinMode::ON;
             ctx_->desired_spin_mode = SpinMode::OFF;
-            ctx_->spin_reason = ctx_->is_dead
-                                    ? "执行层关闭小陀螺：机器人已死亡。"
-                                    : (!ctx_->referee_link_fresh
-                                           ? "执行层关闭小陀螺：输入链路超时。"
-                                           : (!ctx_->match_started
-                                                  ? "执行层关闭小陀螺：比赛未开始。"
-                                                  : (ctx_->power_guard_active
-                                                         ? "执行层关闭小陀螺：底盘功率守卫触发。"
-                                                         : "执行层关闭小陀螺：超级电容守卫触发。")));
+            ctx_->spin_filtered_mode = SpinMode::OFF;
+            ctx_->spin_preference_on_since_ms = 0;
+            ctx_->spin_preference_off_since_ms = 0;
+            ctx_->spin_target_last_seen_ms = 0;
+            ctx_->spin_under_attack_last_seen_ms = 0;
+            if (ctx_->spin_last_change_ms == 0 || was_on)
+            {
+                ctx_->spin_last_change_ms = ctx_->now_ms;
+            }
+            if (ctx_->is_dead)
+            {
+                ctx_->spin_reason = "执行层关闭小陀螺：机器人已死亡。";
+            }
+            else if (!ctx_->referee_link_fresh)
+            {
+                ctx_->spin_reason = "执行层关闭小陀螺：输入链路超时。";
+            }
+            else if (!ctx_->match_started)
+            {
+                ctx_->spin_reason = "执行层关闭小陀螺：比赛未开始。";
+            }
+            else if (ctx_->need_supply)
+            {
+                ctx_->spin_reason = "执行层关闭小陀螺：低血/低弹补给闭环优先。";
+            }
+            else
+            {
+                ctx_->spin_reason = "执行层关闭小陀螺：紧急安全分支接管。";
+            }
             return BT::NodeStatus::SUCCESS;
         }
 
-        ctx_->desired_spin_mode = ctx_->preferred_spin_mode;
-        if (ctx_->spin_reason.empty())
+        // 内部运动态驱动小陀螺：NAV 优先导航，ATTACK/DEFENSE 持续开启。
+        if (InternalMotionUsesChassisNavigation(ctx_->internal_motion_latched))
         {
-            ctx_->spin_reason = ctx_->desired_spin_mode == SpinMode::ON
-                                    ? "执行层采纳战术偏好，启用小陀螺。"
-                                    : "执行层采纳战术偏好，关闭小陀螺。";
+            const bool was_on = ctx_->spin_filtered_mode == SpinMode::ON;
+            ctx_->desired_spin_mode = SpinMode::OFF;
+            ctx_->spin_filtered_mode = SpinMode::OFF;
+            ctx_->spin_preference_on_since_ms = 0;
+            ctx_->spin_preference_off_since_ms = 0;
+            if (ctx_->spin_last_change_ms == 0 || was_on)
+            {
+                ctx_->spin_last_change_ms = ctx_->now_ms;
+            }
+            ctx_->spin_reason =
+                std::string("执行层关闭小陀螺：当前内部状态为 ") +
+                InternalMotionStateToString(ctx_->internal_motion_latched) +
+                "，优先保证底盘导航机动。";
+            return BT::NodeStatus::SUCCESS;
         }
+        if (InternalMotionUsesCombatOutput(ctx_->internal_motion_latched))
+        {
+            const bool was_off = ctx_->spin_filtered_mode == SpinMode::OFF;
+            ctx_->desired_spin_mode = SpinMode::ON;
+            ctx_->spin_filtered_mode = SpinMode::ON;
+            ctx_->spin_preference_on_since_ms = ctx_->now_ms;
+            ctx_->spin_preference_off_since_ms = 0;
+            if (ctx_->spin_last_change_ms == 0 || was_off)
+            {
+                ctx_->spin_last_change_ms = ctx_->now_ms;
+            }
+            const char* name = InternalMotionStateToString(ctx_->internal_motion_latched);
+            ctx_->spin_reason =
+                std::string("执行层开启小陀螺：当前内部状态为 ") + name + "。";
+            return BT::NodeStatus::SUCCESS;
+        }
+
+        const bool target_now =
+            ctx_->autoaim_fire_ready || ctx_->autoaim_tracking || ctx_->autoaim_has_target ||
+            (ctx_->enemy_in_view && ctx_->enemy_confidence >= 0.45f);
+        const bool target_close =
+            target_now && ctx_->autoaim_target_distance > 0.0f &&
+            ctx_->autoaim_target_distance <= ctx_->engage_target_max_distance_m;
+        if (target_close)
+        {
+            ctx_->spin_target_last_seen_ms = ctx_->now_ms;
+        }
+        if (ctx_->under_attack)
+        {
+            ctx_->spin_under_attack_last_seen_ms = ctx_->now_ms;
+        }
+
+        const bool target_recent =
+            ctx_->spin_target_last_seen_ms != 0 &&
+            ElapsedMs(ctx_->now_ms, ctx_->spin_target_last_seen_ms) <=
+                ctx_->spin_target_hold_ms;
+        const bool under_attack_recent =
+            ctx_->spin_under_attack_last_seen_ms != 0 &&
+            ElapsedMs(ctx_->now_ms, ctx_->spin_under_attack_last_seen_ms) <=
+                ctx_->spin_under_attack_hold_ms;
+        const bool autoaim_policy_on =
+            ctx_->desired_fire_policy == FirePolicy::NORMAL ||
+            ctx_->desired_fire_policy == FirePolicy::AGGRESSIVE;
+        const bool request_on = autoaim_policy_on || target_recent || under_attack_recent;
+
+        if (request_on)
+        {
+            if (ctx_->spin_preference_on_since_ms == 0)
+            {
+                ctx_->spin_preference_on_since_ms = ctx_->now_ms;
+            }
+            ctx_->spin_preference_off_since_ms = 0;
+        }
+        else
+        {
+            if (ctx_->spin_preference_off_since_ms == 0)
+            {
+                ctx_->spin_preference_off_since_ms = ctx_->now_ms;
+            }
+            ctx_->spin_preference_on_since_ms = 0;
+        }
+
+        SpinMode filtered = request_on ? SpinMode::ON : SpinMode::OFF;
+        if (ctx_->spin_hysteresis_enabled && ctx_->spin_filtered_mode == SpinMode::ON &&
+            !request_on)
+        {
+            const bool can_turn_off =
+                ElapsedEnough(ctx_->now_ms, ctx_->spin_preference_off_since_ms,
+                              ctx_->spin_off_confirm_ms) &&
+                ElapsedEnough(ctx_->now_ms, ctx_->spin_last_change_ms, ctx_->spin_min_on_ms);
+            if (!can_turn_off)
+            {
+                filtered = SpinMode::ON;
+            }
+        }
+        else if (ctx_->spin_hysteresis_enabled && ctx_->spin_filtered_mode == SpinMode::OFF &&
+                 request_on)
+        {
+            const bool can_turn_on =
+                ElapsedEnough(ctx_->now_ms, ctx_->spin_preference_on_since_ms,
+                              ctx_->spin_on_confirm_ms) &&
+                ElapsedEnough(ctx_->now_ms, ctx_->spin_last_change_ms, ctx_->spin_min_off_ms);
+            filtered = can_turn_on ? SpinMode::ON : SpinMode::OFF;
+        }
+
+        if (filtered != ctx_->spin_filtered_mode)
+        {
+            ctx_->spin_filtered_mode = filtered;
+            ctx_->spin_last_change_ms = ctx_->now_ms;
+        }
+        ctx_->desired_spin_mode = ctx_->spin_filtered_mode;
+
+        std::ostringstream reason;
+        reason << "执行层小陀螺滞回：raw_pref="
+               << SpinModeToString(ctx_->preferred_spin_mode)
+               << ", autoaim_policy_on=" << (autoaim_policy_on ? "true" : "false")
+               << ", target_recent=" << (target_recent ? "true" : "false")
+               << ", under_attack_recent=" << (under_attack_recent ? "true" : "false")
+               << ", target_hold_ms=" << ctx_->spin_target_hold_ms
+               << ", under_attack_hold_ms=" << ctx_->spin_under_attack_hold_ms
+               << ", on_confirm_ms=" << ctx_->spin_on_confirm_ms
+               << ", off_confirm_ms=" << ctx_->spin_off_confirm_ms
+               << ", min_on_ms=" << ctx_->spin_min_on_ms
+               << ", output=" << SpinModeToString(ctx_->desired_spin_mode) << "。";
+        if (ctx_->desired_spin_mode == SpinMode::ON && !request_on)
+        {
+            const auto off_elapsed = ElapsedMs(ctx_->now_ms, ctx_->spin_preference_off_since_ms);
+            const auto on_elapsed = ElapsedMs(ctx_->now_ms, ctx_->spin_last_change_ms);
+            reason << " OFF 请求仍在确认中，off_elapsed_ms=" << off_elapsed
+                   << ", on_elapsed_ms=" << on_elapsed << "。";
+        }
+        else if (target_recent && ctx_->preferred_spin_mode == SpinMode::OFF)
+        {
+            reason << " 自瞄/敌情目标仍在保持窗内，禁止因瞬时丢目标关闭小陀螺。";
+        }
+        else if (under_attack_recent && ctx_->preferred_spin_mode == SpinMode::OFF)
+        {
+            reason << " 受击保持窗仍有效，禁止因未见目标关闭小陀螺。";
+        }
+        ctx_->spin_reason = reason.str();
         return BT::NodeStatus::SUCCESS;
     }
 };
@@ -455,6 +716,18 @@ public:
 
         if (ctx_->is_dead || !ctx_->referee_link_fresh || !ctx_->match_started ||
             ctx_->supercap_guard_active)
+        {
+            ctx_->desired_supercap_mode = SupercapMode::OFF;
+            return BT::NodeStatus::SUCCESS;
+        }
+
+        if (ctx_->desired_spin_mode == SpinMode::ON)
+        {
+            ctx_->desired_supercap_mode = SupercapMode::BURST;
+            return BT::NodeStatus::SUCCESS;
+        }
+
+        if (InternalMotionUsesChassisNavigation(ctx_->internal_motion_latched))
         {
             ctx_->desired_supercap_mode = SupercapMode::OFF;
             return BT::NodeStatus::SUCCESS;
@@ -568,10 +841,40 @@ public:
         const float hp_ratio = SafeRatio(ctx_->hp, ctx_->hp_max);
         oss << "goal=" << ctx_->desired_goal
             << ", posture=" << PostureToString(ctx_->desired_posture)
+            << ", internal_motion=" << InternalMotionStateToString(ctx_->internal_motion_latched)
             << ", posture_reason=" << ctx_->posture_reason
             << ", fire=" << FirePolicyToString(ctx_->desired_fire_policy)
+            << ", fire_at_patrol_hold="
+            << ((ctx_->dwell_active && !ctx_->dwell_complete &&
+                 ctx_->dwell_required_ms > 0 &&
+                 (ctx_->tactical_state == TacticalState::HOLD ||
+                  ctx_->tactical_state == TacticalState::SEARCH ||
+                  ctx_->tactical_state == TacticalState::REPOSITION))
+                    ? "true"
+                    : "false")
             << ", spin=" << SpinModeToString(ctx_->desired_spin_mode)
             << ", spin_reason=" << ctx_->spin_reason
+            << ", spin_filtered=" << SpinModeToString(ctx_->spin_filtered_mode)
+            << ", spin_target_recent="
+            << ((ctx_->spin_target_last_seen_ms != 0 &&
+                 ElapsedMs(ctx_->now_ms, ctx_->spin_target_last_seen_ms) <=
+                     ctx_->spin_target_hold_ms)
+                    ? "true"
+                    : "false")
+            << ", spin_target_last_seen_ms=" << ctx_->spin_target_last_seen_ms
+            << ", under_attack=" << (ctx_->under_attack ? "true" : "false")
+            << ", armor_id=" << static_cast<int>(ctx_->armor_id)
+            << ", hp_deduction_reason=" << static_cast<int>(ctx_->hp_deduction_reason)
+            << ", spin_under_attack_recent="
+            << ((ctx_->spin_under_attack_last_seen_ms != 0 &&
+                 ElapsedMs(ctx_->now_ms, ctx_->spin_under_attack_last_seen_ms) <=
+                     ctx_->spin_under_attack_hold_ms)
+                    ? "true"
+                    : "false")
+            << ", spin_under_attack_last_seen_ms=" << ctx_->spin_under_attack_last_seen_ms
+            << ", spin_on_since_ms=" << ctx_->spin_preference_on_since_ms
+            << ", spin_off_since_ms=" << ctx_->spin_preference_off_since_ms
+            << ", spin_last_change_ms=" << ctx_->spin_last_change_ms
             << ", supercap=" << SupercapModeToString(ctx_->desired_supercap_mode)
             << ", referee_fresh=" << (ctx_->referee_link_fresh ? "true" : "false")
             << ", status_age_ms=" << ctx_->referee_status_age_ms
@@ -596,10 +899,15 @@ public:
             << ", hp_ratio=" << hp_ratio
             << ", on_base=" << (ctx_->on_base ? "true" : "false")
             << ", on_supply=" << (ctx_->on_supply ? "true" : "false")
+            << ", on_fortress=" << (ctx_->on_fortress ? "true" : "false")
+            << ", on_outpost=" << (ctx_->on_outpost ? "true" : "false")
+            << ", on_highground=" << (ctx_->on_highground ? "true" : "false")
             << ", rfid_status=" << ctx_->rfid_status
+            << ", rfid_status_2=" << static_cast<int>(ctx_->rfid_status_2)
             << ", recovery_buff=" << static_cast<int>(ctx_->recovery_buff)
             << ", at_valid_recovery_rfid="
             << (ctx_->at_valid_recovery_rfid ? "true" : "false")
+            << ", recovery_confirmed_by=" << ctx_->recovery_confirmed_by
             << ", need_supply=" << (ctx_->need_supply ? "true" : "false")
             << ", hp_recovery_active=" << (ctx_->hp_recovery_active ? "true" : "false")
             << ", ammo_recovery_active=" << (ctx_->ammo_recovery_active ? "true" : "false")

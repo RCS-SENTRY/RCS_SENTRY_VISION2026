@@ -60,6 +60,8 @@ public:
     max_speed_scale_in_slow_ = declare_parameter<double>("max_speed_scale_in_slow", 0.5);
 
     emergency_stop_ = declare_parameter<bool>("emergency_stop", true);
+    stop_on_any_emergency_ = declare_parameter<bool>("stop_on_any_emergency", true);
+    global_scale_on_any_obstacle_ = declare_parameter<bool>("global_scale_on_any_obstacle", true);
     min_points_for_obstacle_ = declare_parameter<int>("min_points_for_obstacle", 8);
     min_points_for_emergency_ = declare_parameter<int>("min_points_for_emergency", 4);
 
@@ -68,7 +70,7 @@ public:
     left_.enabled = declare_parameter<bool>("enable_left_limit", true);
     right_.enabled = declare_parameter<bool>("enable_right_limit", true);
 
-    pass_through_when_no_cloud_ = declare_parameter<bool>("pass_through_when_no_cloud", true);
+    pass_through_when_no_cloud_ = declare_parameter<bool>("pass_through_when_no_cloud", false);
 
     publish_rate_hz_ = std::max(1.0, publish_rate_hz_);
     min_points_for_obstacle_ = std::max(1, min_points_for_obstacle_);
@@ -149,6 +151,7 @@ private:
       if (!pass_through_when_no_cloud_) {
         output.linear.x = 0.0;
         output.linear.y = 0.0;
+        output.angular.z = 0.0;
       }
       publish(output, cloud_age, true);
       return;
@@ -206,6 +209,17 @@ private:
            stats.min_distance <= emergency_distance_;
   }
 
+  bool anyObstacle() const
+  {
+    return isObstacle(front_) || isObstacle(back_) || isObstacle(left_) || isObstacle(right_);
+  }
+
+  bool anyEmergency() const
+  {
+    return isEmergency(front_) || isEmergency(back_) || isEmergency(left_) ||
+           isEmergency(right_);
+  }
+
   double scaleFor(const DirectionStats & stats) const
   {
     if (!isObstacle(stats)) {
@@ -225,6 +239,13 @@ private:
 
   void applyLimits(geometry_msgs::msg::Twist & cmd) const
   {
+    if (stop_on_any_emergency_ && anyEmergency()) {
+      cmd.linear.x = 0.0;
+      cmd.linear.y = 0.0;
+      cmd.angular.z = 0.0;
+      return;
+    }
+
     const bool front_emergency = cmd.linear.x > 0.0 && isEmergency(front_);
     const bool back_emergency = cmd.linear.x < 0.0 && isEmergency(back_);
     const bool left_emergency = cmd.linear.y > 0.0 && isEmergency(left_);
@@ -248,6 +269,16 @@ private:
     } else if (cmd.linear.y < 0.0) {
       cmd.linear.y *= scaleFor(right_);
     }
+
+    if (global_scale_on_any_obstacle_) {
+      const double global_scale = std::min(
+        std::min(scaleFor(front_), scaleFor(back_)),
+        std::min(scaleFor(left_), scaleFor(right_)));
+      if (global_scale < 1.0) {
+        cmd.linear.x *= global_scale;
+        cmd.linear.y *= global_scale;
+      }
+    }
   }
 
   std::string statsToString(const DirectionStats & stats) const
@@ -270,6 +301,13 @@ private:
     stream << std::fixed << std::setprecision(3)
            << "cloud_age=" << cloud_age
            << " obstacle_timeout=" << (obstacle_timeout ? "true" : "false")
+           << " obstacle_any=" << (!obstacle_timeout && anyObstacle() ? "true" : "false")
+           << " emergency_any=" << (!obstacle_timeout && anyEmergency() ? "true" : "false")
+           << " stop_on_any_emergency=" << (stop_on_any_emergency_ ? "true" : "false")
+           << " global_scale_on_any_obstacle="
+           << (global_scale_on_any_obstacle_ ? "true" : "false")
+           << " pass_through_when_no_cloud="
+           << (pass_through_when_no_cloud_ ? "true" : "false")
            << " front_min=" << statsToString(front_) << " front_pts=" << front_.points
            << " back_min=" << statsToString(back_) << " back_pts=" << back_.points
            << " left_min=" << statsToString(left_) << " left_pts=" << left_.points
@@ -299,9 +337,11 @@ private:
   double max_speed_scale_in_caution_{0.85};
   double max_speed_scale_in_slow_{0.5};
   bool emergency_stop_{true};
+  bool stop_on_any_emergency_{true};
+  bool global_scale_on_any_obstacle_{true};
   int min_points_for_obstacle_{8};
   int min_points_for_emergency_{4};
-  bool pass_through_when_no_cloud_{true};
+  bool pass_through_when_no_cloud_{false};
 
   DirectionStats front_;
   DirectionStats back_;

@@ -1,0 +1,19 @@
+[Unit]
+Description=Sentry match full bringup watchdog
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/rm/Desktop/SENTRY_FULL/XMU_RCS_SENTRY
+ExecStartPre=/bin/sleep 3
+ExecStart=/home/rm/Desktop/SENTRY_FULL/XMU_RCS_SENTRY/tools/start_sentry_watchdog_systemd.sh
+Restart=always
+RestartSec=5
+StartLimitIntervalSec=0
+Environment=HOME=/root
+Environment=DISPLAY=:0
+Environment=ROS_DOMAIN_ID=0
+
+[Install]
+WantedBy=multi-user.target

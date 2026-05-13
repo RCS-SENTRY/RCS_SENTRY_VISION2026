@@ -12,6 +12,7 @@ find_package(nav2_msgs REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(rclcpp_action REQUIRED)
 find_package(rm_interfaces REQUIRED)
+find_package(sensor_msgs REQUIRED)
 find_package(std_msgs REQUIRED)
 find_package(tf2 REQUIRED)
 find_package(tf2_geometry_msgs REQUIRED)
@@ -24,6 +25,7 @@ add_executable(sentry_command_mux_node
 ament_target_dependencies(sentry_command_mux_node
   rclcpp
   rm_interfaces
+  sensor_msgs
   std_msgs
 )
 

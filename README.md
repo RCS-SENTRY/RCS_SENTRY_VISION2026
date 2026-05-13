@@ -247,7 +247,7 @@ command_mux 输出最终 /gimbal_cmd
 
 1. 低血/低弹 -> 进入补给闭环，按 `SUPPLY_LEFT -> SUPPLY_RIGHT -> BASE_HOME` 候选点寻找 RFID 恢复区。
 2. 到达补给候选点后必须用 RFID 确认，`on_supply` 或 `on_base` 成立后才停留等待恢复。
-3. 有敌人且状态健康 -> `ENGAGE`。
+3. 有敌人且状态健康 -> `ENGAGE`，发布内部 `CURRENT_HOLD`（协议 `goal_id=0`）取消导航目标，原地开小陀螺交给自瞄锁敌；血量不健康或当前点位失败则转 `RETREAT`。
 4. 热量危险 -> 保守/停火。
 5. 巡航/搜索到点 -> dwell 等待一小段时间，再允许切换下一个巡航目标。
 6. 死亡且裁判链路新鲜 -> 硬导航到 `BASE_HOME`，停火、关小陀螺，等待 RFID 和回血；`WAIT_REVIVE` 只作为不可移动时的状态语义。
@@ -272,9 +272,29 @@ ros2 launch rm_bringup sentry_bringup.launch.py \
   enable_sentry_mission_runner:=false \
   enable_second_lidar_safety:=true \
   slam:=False \
+  initial_pose_yaw:=2.15 \
   map:=/home/rm/Desktop/SENTRY_FULL/maps/new_map.yaml \
   prior_pcd_file:=/home/rm/Desktop/SENTRY_FULL/maps/new_scans.pcd \
   use_rviz:=false
+```
+
+如果要做开机自启动 watchdog，直接使用仓库里的 systemd 服务文件：
+
+```bash
+sudo install -m 0644 tools/sentry.service /etc/systemd/system/sentry.service
+sudo chmod +x tools/start_sentry_watchdog_systemd.sh
+sudo systemctl daemon-reload
+sudo systemctl enable --now sentry.service
+```
+
+停用并清理旧自启：
+
+```bash
+sudo systemctl stop sentry.service
+sudo systemctl disable sentry.service
+sudo rm -f /etc/systemd/system/sentry.service
+sudo rm -f /etc/systemd/system/multi-user.target.wants/sentry.service
+sudo systemctl daemon-reload
 ```
 
 注意：
@@ -286,11 +306,20 @@ ros2 launch rm_bringup sentry_bringup.launch.py \
 5. 机器人端比赛默认不开 RViz，需要现场看图时临时把 `use_rviz:=true`。
 6. `enable_small_gicp` 的 launch 默认值已经是 `false`，比赛命令里不重复写。
 7. 目标颜色/敌我识别沿用裁判系统与视觉配置，不在比赛命令里硬编码。
-8. 某个普通导航目标 active 超过 `10s` 且未进入战术到点范围时，会标记 stuck/failed 并切换备用点；`BASE_HOME` 作为死亡回家硬任务不被 active timeout 切走。
+8. 某个普通导航目标 active 超过 `10s` 且未进入战术到点范围时，会标记 stuck/failed，但先把当前位姿等效为临时战术点驻留一轮；驻留期间 `fire_policy=2` 并保持扫描/小陀螺逻辑，驻留结束后再切换备用点。`BASE_HOME` 作为死亡回家硬任务不被 active timeout 切走。
 
-补给/死亡回家相关默认参数在 `sentry_bt.launch.py` 中：
+补给/死亡回家相关默认参数在 `sentry_bt.launch.py` 和
+`sentry_bt/config/sentry_bt_params.yaml` 中：
 
 ```text
+rfid.base_bits=[0]
+rfid.supply_bits=[19, 20]
+rfid.fortress_bits=[17]
+rfid.outpost_bits=[18]
+rfid.highground_bits=[1, 2, 3, 4, 9, 10, 11, 12]
+rfid.base_bits_2=[]
+rfid.supply_bits_2=[]
+recovery.require_recovery_buff_for_confirm=false
 hp_resupply_enter_ratio=0.35
 hp_resupply_exit_ratio=0.60
 ammo_resupply_enter_count=80
@@ -303,6 +332,14 @@ dead_return_goal=BASE_HOME
 dead_full_hp_exit_ratio=0.98
 goal_dwell_search_ms=2500
 goal_dwell_hold_ms=3000
+spin_hysteresis_enabled=true
+spin_on_confirm_ms=0
+spin_off_confirm_ms=0
+spin_min_on_ms=0
+spin_target_hold_ms=5000
+spin_under_attack_hold_ms=5000
+spin_hp_drop_threshold=0
+spin_mux_hold_sec=5.0
 ```
 
 实车验收重点：
@@ -319,10 +356,57 @@ ros2 topic echo /sentry/nav_goal_debug
 
 ```text
 need_supply, hp_recovery_active, ammo_recovery_active
-on_base, on_supply, rfid_status, recovery_buff
+on_base, on_supply, on_fortress, on_outpost, on_highground
+rfid_status, rfid_status_2, recovery_buff, recovery_confirmed_by
 resupply_goal_current, resupply_rfid_confirmed, resupply_waiting_recovery
 dead_return_home_active, dead_home_rfid_confirmed, dead_waiting_full_hp
 dwell_active, dwell_complete, dwell_remaining_ms
+spin_filtered, spin_target_recent, spin_target_last_seen_ms
+under_attack, armor_id, hp_deduction_reason
+spin_under_attack_recent, spin_under_attack_last_seen_ms
+spin_on_since_ms, spin_off_since_ms, spin_last_change_ms
+```
+
+现场如果裁判系统 RFID 位变化，复制并修改
+`src/sentry_bt/config/sentry_bt_params.yaml`，然后通过 bringup 指向新文件即可：
+
+```yaml
+sentry_bt:
+  ros__parameters:
+    rfid.base_bits: [0]
+    rfid.supply_bits: [19, 20]
+    rfid.base_bits_2: [1]
+    rfid.supply_bits_2: [2, 3]
+    recovery.require_recovery_buff_for_confirm: false
+```
+
+```bash
+ros2 launch rm_bringup sentry_bringup.launch.py \
+  ... \
+  sentry_bt_params_file:=/home/rm/Desktop/SENTRY_FULL/field_sentry_bt_params.yaml \
+  require_recovery_buff_for_confirm:=false
+```
+
+`require_recovery_buff_for_confirm:=true` 时，恢复点确认必须同时满足 RFID 和
+`recovery_buff > 0`；默认 `false`，避免 RFID 先到、buff 延迟导致赛场上误切点。
+
+`command_mux` 支持 intent-only heartbeat。即使 `/autoaim/gimbal_cmd_raw` 没有发布，
+只要 `/sentry/intent` 新鲜，仍会发布安全 `/gimbal_cmd`，让 `goal_id`、复活、
+兑血、兑弹、姿态等规则字段下发；此模式下 `fire_control` 强制为 `0`。
+调试看：
+
+```bash
+ros2 topic echo /sentry/command_mux_debug
+```
+
+重点字段：
+
+```text
+mode=autoaim_merge / intent_only_heartbeat / idle
+has_autoaim_raw, autoaim_fresh, intent_fresh, has_status
+final_fire, goal_id, rule_action_type, revive_cmd
+remote_hp_req_inc, remote_ammo_req_inc, ammo_exchange_target_total
+posture_cmd_referee
 ```
 
 ## 7. 到点判定说明

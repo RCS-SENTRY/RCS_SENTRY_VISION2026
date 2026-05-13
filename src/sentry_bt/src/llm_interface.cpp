@@ -26,7 +26,7 @@ void LLMInterface::Update(RobotContext& ctx)
     {
         ctx.llm_advice.valid = true;
         ctx.llm_advice.tactical_state = TacticalState::ENGAGE;
-        ctx.llm_advice.goal_id = "COMBAT_HOLD_A";
+        ctx.llm_advice.goal_id = "CURRENT_HOLD";
         ctx.llm_advice.posture_preference = Posture::ATTACK;
         ctx.llm_advice.fire_policy = FirePolicy::AGGRESSIVE;
         ctx.llm_advice.spin_preference = (ctx.enemy_distance_m < 3.5f) ? SpinMode::ON
@@ -41,7 +41,7 @@ void LLMInterface::Update(RobotContext& ctx)
     {
         ctx.llm_advice.valid = true;
         ctx.llm_advice.tactical_state = TacticalState::REPOSITION;
-        ctx.llm_advice.goal_id = "HIGHGROUND_CENTER";
+        ctx.llm_advice.goal_id = "MID_CROSS";
         ctx.llm_advice.posture_preference = Posture::MOVE;
         ctx.llm_advice.fire_policy = FirePolicy::CONSERVATIVE;
         ctx.llm_advice.spin_preference = SpinMode::OFF;

@@ -43,6 +43,51 @@ std::uint64_t DwellRequiredForState(const RobotContext& ctx)
     return ctx.goal_dwell_default_ms;
 }
 
+std::uint8_t GoalNameToProtocolId(const std::string& goal_id)
+{
+    if (goal_id == "CURRENT_HOLD") return 0;
+    if (goal_id == "SAFE_HOLD") return 1;
+    if (goal_id == "WAIT_REVIVE") return 2;
+    if (goal_id == "SAFE_RETREAT_A") return 3;
+    if (goal_id == "SAFE_RETREAT_B") return 4;
+    if (goal_id == "SUPPLY_LEFT") return 5;
+    if (goal_id == "SUPPLY_RIGHT") return 6;
+    if (goal_id == "FORTRESS_HOLD") return 7;
+    if (goal_id == "OUTPOST_HOLD") return 8;
+    if (goal_id == "SEARCH_AREA_A") return 14;
+    if (goal_id == "SEARCH_AREA_B") return 15;
+    if (goal_id == "MID_CROSS") return 18;
+    if (goal_id == "BASE_HOME") return 19;
+    if (goal_id == "BASE_HOLD") return 20;
+    return 0;
+}
+
+std::string CurrentPatrolGoal(const RobotContext& ctx)
+{
+    if (ctx.patrol_goals.empty())
+    {
+        return "SEARCH_AREA_A";
+    }
+    const auto index = static_cast<std::size_t>(
+        std::clamp(ctx.patrol_goal_index, 0,
+                   static_cast<int>(ctx.patrol_goals.size()) - 1));
+    return ctx.patrol_goals[index];
+}
+
+void AdvancePatrolGoal(RobotContext& ctx, const std::string& reason)
+{
+    if (ctx.patrol_goals.empty())
+    {
+        ctx.patrol_goal_index = 0;
+        ctx.patrol_reason = reason + " 巡航序列为空，fallback=SEARCH_AREA_A。";
+        return;
+    }
+    ctx.patrol_goal_index =
+        (ctx.patrol_goal_index + 1) % static_cast<int>(ctx.patrol_goals.size());
+    ctx.patrol_reason =
+        reason + " 下一个巡航防守点=" + CurrentPatrolGoal(ctx) + "。";
+}
+
 // UpdateBlackboardNode 是整棵主树的起始节点。
 // 它的核心作用不是“从外部取数”，而是把接口层已经写入的输入快照
 // 重新整理成适合本轮决策使用的中间状态。
@@ -79,11 +124,74 @@ public:
 
         // 便捷状态来自原始输入的快速归纳。
         // 这些值不是底层传感器直接给出的，而是为了后面的节点判断更方便。
+        const bool damage_status_valid = ctx_->match_started && ctx_->referee_link_fresh &&
+                                         ctx_->hp > 0;
+        const bool projectile_damage_reason =
+            damage_status_valid && ctx_->armor_id != 0 && ctx_->hp_deduction_reason == 0;
+        const bool collision_or_offline_damage =
+            damage_status_valid &&
+            (ctx_->hp_deduction_reason == 1 || ctx_->hp_deduction_reason == 5);
+        bool hp_drop_hit_event = false;
+        if (damage_status_valid)
+        {
+            if (ctx_->spin_hp_observation_initialized)
+            {
+                const int hp_drop = ctx_->spin_last_observed_hp - ctx_->hp;
+                hp_drop_hit_event = hp_drop > ctx_->spin_hp_drop_threshold;
+                if (hp_drop > 0 && collision_or_offline_damage)
+                {
+                    ctx_->safety_interrupt_last_seen_ms = ctx_->now_ms;
+                    ctx_->safety_interrupt_reason =
+                        ctx_->hp_deduction_reason == 5
+                            ? "碰撞扣血：记录避障风险，保持默认目标规划。"
+                            : "模块离线扣血：记录传感器风险，保持默认目标规划。";
+                }
+            }
+            ctx_->spin_last_observed_hp = ctx_->hp;
+            ctx_->spin_hp_observation_initialized = true;
+        }
+        else if (!ctx_->referee_link_fresh || ctx_->hp <= 0)
+        {
+            ctx_->spin_hp_observation_initialized = false;
+            ctx_->spin_last_observed_hp = std::max(0, ctx_->hp);
+        }
+        ctx_->under_attack =
+            (projectile_damage_reason && hp_drop_hit_event) ||
+            (ctx_->spin_hp_drop_triggers_under_attack && hp_drop_hit_event &&
+             !collision_or_offline_damage);
+        if (ctx_->under_attack)
+        {
+            ctx_->spin_under_attack_last_seen_ms = ctx_->now_ms;
+        }
+
         ctx_->ammo_low = UpdateHysteresis(ctx_->ammo_low,
                                           ctx_->ammo_17 < ctx_->ammo_resupply_enter_count,
                                           ctx_->ammo_17 > ctx_->ammo_resupply_exit_count);
         const float hp_ratio = SafeRatio(ctx_->hp, ctx_->hp_max);
-        ctx_->at_valid_recovery_rfid = ctx_->on_supply || ctx_->on_base;
+        const bool recovery_rfid_present = ctx_->on_supply || ctx_->on_base;
+        const bool recovery_buff_ok =
+            !ctx_->require_recovery_buff_for_confirm || ctx_->recovery_buff > 0;
+        ctx_->at_valid_recovery_rfid = recovery_rfid_present && recovery_buff_ok;
+        if (!recovery_rfid_present || !recovery_buff_ok)
+        {
+            ctx_->recovery_confirmed_by = "none";
+        }
+        else if (ctx_->on_base && ctx_->require_recovery_buff_for_confirm)
+        {
+            ctx_->recovery_confirmed_by = "on_base+recovery_buff";
+        }
+        else if (ctx_->on_supply && ctx_->require_recovery_buff_for_confirm)
+        {
+            ctx_->recovery_confirmed_by = "on_supply+recovery_buff";
+        }
+        else if (ctx_->on_base)
+        {
+            ctx_->recovery_confirmed_by = "on_base";
+        }
+        else
+        {
+            ctx_->recovery_confirmed_by = "on_supply";
+        }
         ctx_->hp_recovery_active = UpdateHysteresis(
             ctx_->hp_recovery_active, hp_ratio < ctx_->hp_resupply_enter_ratio,
             hp_ratio > ctx_->hp_resupply_exit_ratio);
@@ -96,9 +204,53 @@ public:
             ctx_->ammo_recovery_active = false;
         }
         ctx_->resupply_active = ctx_->hp_recovery_active || ctx_->ammo_recovery_active;
+        if (!ctx_->is_dead && hp_ratio < ctx_->hp_resupply_exit_ratio)
+        {
+            ctx_->hp_recovery_active = true;
+            ctx_->resupply_active = true;
+        }
         ctx_->need_supply = ctx_->resupply_active;
         ctx_->need_emergency_safety = !ctx_->referee_link_fresh;
         ctx_->need_rule_action = false;
+        const bool first_lidar_problem =
+            !ctx_->main_lidar_seen ||
+            (ctx_->main_lidar_last_seen_ms != 0 &&
+             ElapsedSince(ctx_->now_ms, ctx_->main_lidar_last_seen_ms) >
+                 ctx_->main_lidar_timeout_ms);
+        const bool second_lidar_debug_fresh =
+            ctx_->safety_debug_seen && ctx_->safety_debug_last_seen_ms != 0 &&
+            ElapsedSince(ctx_->now_ms, ctx_->safety_debug_last_seen_ms) <=
+                ctx_->safety_debug_timeout_ms;
+        const bool second_lidar_problem =
+            ctx_->safety_debug_seen &&
+            (!second_lidar_debug_fresh || ctx_->safety_emergency_active ||
+             ctx_->safety_obstacle_timeout);
+        const bool recent_damage_interrupt =
+            ctx_->safety_interrupt_last_seen_ms != 0 &&
+            ElapsedSince(ctx_->now_ms, ctx_->safety_interrupt_last_seen_ms) <=
+                ctx_->safety_collision_interrupt_ms;
+        if (first_lidar_problem)
+        {
+            ctx_->safety_interrupt_reason =
+                ctx_->main_lidar_seen
+                    ? "第一雷达点云超时，保持默认目标规划并等待导航避障恢复。"
+                    : "尚未收到第一雷达点云，保持默认目标规划并等待导航避障恢复。";
+        }
+        else if (second_lidar_problem)
+        {
+            ctx_->safety_interrupt_reason =
+                ctx_->safety_emergency_active
+                    ? "第二雷达 safety emergency，保持默认目标规划并交给导航避障。"
+                    : "第二雷达 safety 点云超时或避障未通过，保持默认目标规划并交给导航避障。";
+        }
+        ctx_->safety_interrupt_active =
+            first_lidar_problem || second_lidar_problem || recent_damage_interrupt ||
+            ctx_->nav_goal_failed;
+        if (ctx_->nav_goal_failed)
+        {
+            ctx_->safety_interrupt_reason =
+                "当前导航目标失败/避障未通过，交给候选点切换逻辑。";
+        }
 
         if (!ctx_->resupply_active)
         {
@@ -147,8 +299,7 @@ public:
             ctx_->dead_return_reason =
                 "机器人死亡但裁判链路新鲜，按热修规则硬导航回基地/补给区等待回血。";
 
-            const bool at_dead_recovery = ctx_->on_base || ctx_->on_supply;
-            if (at_dead_recovery)
+            if (ctx_->at_valid_recovery_rfid)
             {
                 if (ctx_->dead_home_rfid_confirm_ms == 0)
                 {
@@ -159,9 +310,8 @@ public:
                     ctx_->dead_return_rfid_confirm_hold_ms;
                 ctx_->dead_home_rfid_confirmed = hold_ok;
                 ctx_->dead_waiting_full_hp = hold_ok;
-                ctx_->dead_return_reason += ctx_->on_base
-                                                ? " RFID=on_base，等待回血。"
-                                                : " RFID=on_supply，作为恢复点等待回血。";
+                ctx_->dead_return_reason +=
+                    " RFID 确认来源=" + ctx_->recovery_confirmed_by + "，等待回血。";
             }
             else
             {
@@ -196,7 +346,10 @@ public:
             ctx_->dwell_start_ms = ctx_->now_ms;
             ctx_->dwell_active = true;
             ctx_->dwell_complete = false;
-            ctx_->dwell_reason = "导航到点，开始 sentry_bt dwell。";
+            ctx_->dwell_reason =
+                ctx_->nav_goal_failed
+                    ? "导航超时等效进入临时战术点，开始 sentry_bt dwell，结束后切备用点。"
+                    : "导航到点，开始 sentry_bt dwell。";
         }
         if (ctx_->dwell_active)
         {
@@ -205,6 +358,31 @@ public:
             ctx_->dwell_complete = elapsed >= ctx_->dwell_required_ms;
             ctx_->dwell_remaining_ms =
                 ctx_->dwell_complete ? 0 : (ctx_->dwell_required_ms - elapsed);
+            if (ctx_->dwell_complete && ctx_->dwell_goal_id != 0 &&
+                !ctx_->is_dead && !ctx_->need_supply && !ctx_->need_emergency_safety)
+            {
+                const auto patrol_goal = CurrentPatrolGoal(*ctx_);
+                if (GoalNameToProtocolId(patrol_goal) == ctx_->dwell_goal_id &&
+                    ctx_->patrol_last_advanced_goal_id != ctx_->dwell_goal_id)
+                {
+                    ctx_->patrol_last_advanced_goal_id = ctx_->dwell_goal_id;
+                    AdvancePatrolGoal(
+                        *ctx_, ctx_->nav_goal_failed
+                                   ? "当前巡航点导航超时等效防守结束"
+                                   : "当前巡航点防守 dwell 结束");
+                }
+            }
+        }
+        if (ctx_->nav_goal_failed && !ctx_->dwell_active &&
+            ctx_->current_goal_id != 0 && !ctx_->is_dead && !ctx_->need_supply)
+        {
+            const auto patrol_goal = CurrentPatrolGoal(*ctx_);
+            if (GoalNameToProtocolId(patrol_goal) == ctx_->current_goal_id &&
+                ctx_->patrol_last_advanced_goal_id != ctx_->current_goal_id)
+            {
+                ctx_->patrol_last_advanced_goal_id = ctx_->current_goal_id;
+                AdvancePatrolGoal(*ctx_, "当前巡航点导航失败且没有进入 dwell");
+            }
         }
         ctx_->last_seen_nav_goal_id = ctx_->current_goal_id;
         ctx_->last_nav_goal_reached = ctx_->nav_goal_reached;

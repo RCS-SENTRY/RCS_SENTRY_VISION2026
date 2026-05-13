@@ -1,0 +1,69 @@
+sentry_bt:
+  ros__parameters:
+    # RFID defaults match the legacy hard-coded mapping.
+    # rfid_status is uint32_t: valid bit indexes are 0..31.
+    # rfid_status_2 is uint8_t: valid bit indexes are 0..7.
+    rfid.base_bits: [0]
+    rfid.supply_bits: [19, 20]
+    rfid.fortress_bits: [17]
+    rfid.outpost_bits: [18]
+    rfid.highground_bits: [1, 2, 3, 4, 9, 10, 11, 12]
+
+    # Leave *_bits_2 unset by default. The node declares them as empty arrays.
+    # If the field RFID mapping uses rfid_status_2, copy this file and add:
+    # rfid.base_bits_2: [0]
+    # rfid.supply_bits_2: [1, 2]
+
+    # Default false because recovery_buff may lag behind RFID on the field.
+    recovery.require_recovery_buff_for_confirm: false
+
+    hp_resupply_enter_ratio: 0.60
+    hp_resupply_exit_ratio: 0.85
+
+    # Spin output hysteresis. Keep OFF transitions long enough that autoaim target
+    # flicker does not make the chassis spin mode chatter.
+    spin_hysteresis_enabled: true
+    spin_on_confirm_ms: 0
+    spin_off_confirm_ms: 3000
+    spin_min_on_ms: 5000
+    spin_min_off_ms: 0
+    spin_target_hold_ms: 5000
+    spin_under_attack_hold_ms: 5000
+    spin_hp_drop_threshold: 0
+    spin_hp_drop_triggers_under_attack: false
+    engage_target_max_distance_m: 7.0
+
+    # 到达巡航/固守候选点后先驻留 12s，期间保持 fire_policy=2 让自瞄持续工作。
+    goal_dwell_default_ms: 12000
+    goal_dwell_search_ms: 12000
+    goal_dwell_hold_ms: 12000
+    goal_dwell_resupply_ms: 0
+    goal_dwell_engage_ms: 0
+
+    # fire_policy 是决策给下位机的自瞄开关，不是自瞄栈内部火力等级：
+    # 1=AUTOAIM_OFF，2=AUTOAIM_ON。到点驻留或 7m 内目标都会高权重开启。
+    fire_policy_hysteresis_enabled: true
+    fire_policy_on_confirm_ms: 150
+    fire_policy_off_confirm_ms: 800
+    fire_policy_min_on_ms: 1500
+    fire_policy_min_off_ms: 500
+    fire_policy_target_hold_ms: 1200
+
+    # 普通巡航只按这三个战术点顺序防守，不再用候选点评分乱跳。
+    patrol_goals: ["SEARCH_AREA_B", "MID_CROSS", "SEARCH_AREA_A"]
+
+    # 战术态最小保持窗：避免 NAV/ENGAGE/HOLD 因目标或导航状态抖动在下位机位上跳变。
+    # RETREAT/RESUPPLY/ENGAGE 可以立即抢占；退出 ENGAGE 或普通巡航态互切至少保持 3s。
+    tactical_state_min_hold_ms: 3000
+    internal_motion_min_hold_ms: 3000
+
+    # 低血/低弹/死亡复活后只在补给点之间切换，直到血量/弹量恢复。
+    resupply_candidates: ["SUPPLY_LEFT", "SUPPLY_RIGHT"]
+    dead_return_goal: "SUPPLY_LEFT"
+
+    # 避障/碰撞只作为导航健康状态和调试信号，不再硬关小陀螺。
+    main_lidar_topic: "/cloud_registered"
+    main_lidar_timeout_ms: 500
+    safety_debug_topic: "/second_lidar_safety_debug"
+    safety_debug_timeout_ms: 500
+    safety_collision_interrupt_ms: 2500

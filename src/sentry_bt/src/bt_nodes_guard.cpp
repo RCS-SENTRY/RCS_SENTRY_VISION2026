@@ -220,20 +220,14 @@ public:
         ctx_->tactical_state = TacticalState::RETREAT;
         ctx_->preferred_posture = Posture::MOVE;
         ctx_->preferred_fire_policy = FirePolicy::HOLD_FIRE;
-        ctx_->preferred_spin_mode =
-            (ctx_->referee_link_fresh && ctx_->enemy_in_view && !ctx_->power_guard_active &&
-             !ctx_->supercap_guard_active)
-                ? SpinMode::ON
-                : SpinMode::OFF;
+        ctx_->preferred_spin_mode = SpinMode::OFF;
         ctx_->preferred_supercap_mode = SupercapMode::OFF;
         ctx_->preferred_goal = ctx_->referee_link_fresh ? "SAFE_RETREAT_A" : "SAFE_HOLD";
         ctx_->goal_reason =
             ctx_->referee_link_fresh ? "硬约束触发后，选择预设的安全撤退点作为回退目标。"
                                      : "输入链路超时，停止主动机动并保持安全点。";
         ctx_->spin_reason =
-            ctx_->preferred_spin_mode == SpinMode::ON
-                ? "紧急安全分支中仍有敌情，且功率/电容守卫未触发，撤退时保持小陀螺。"
-                : "紧急安全分支关闭小陀螺，优先保证功率、电容或链路安全。";
+            "紧急安全分支关闭小陀螺，优先保证避障、碰撞、功率、电容或链路安全。";
         return BT::NodeStatus::SUCCESS;
     }
 };

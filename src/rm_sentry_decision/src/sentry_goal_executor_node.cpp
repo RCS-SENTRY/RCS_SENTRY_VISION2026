@@ -186,23 +186,35 @@ private:
     {
         if (intent.goal_id == 0)
         {
+            const bool had_goal = active_goal_id_ != 0 || last_goal_id_ != 0;
+            const bool was_active = active_;
+            const bool was_reached = reached_;
             if (active_ && current_goal_handle_)
             {
                 nav2_status_ = GoalStatus::STATUS_CANCELING;
                 action_client_->async_cancel_goal(current_goal_handle_);
             }
             active_ = false;
-            reached_ = false;
+            reached_ = had_goal && was_reached;
             failed_ = false;
-            canceled_by_tactical_reach_ = false;
+            canceled_by_tactical_reach_ = had_goal;
             tactical_cancel_requested_ = false;
             active_timeout_cancel_requested_ = false;
-            active_goal_ = GoalPose{};
-            active_goal_id_ = 0;
-            last_goal_id_ = 0;
+            if (!had_goal || (was_active && !was_reached))
+            {
+                active_goal_ = GoalPose{};
+                active_goal_id_ = 0;
+                last_goal_id_ = 0;
+            }
             reach_enter_time_ = rclcpp::Time(0, 0, get_clock()->get_clock_type());
-            PublishStatus("goal_id=0; no Nav2 goal sent");
-            PublishDebug(false, "goal_id=0; no Nav2 goal sent");
+            const std::string stop_reason =
+                !had_goal
+                    ? "goal_id=0; no Nav2 goal sent"
+                    : (was_reached
+                           ? "goal_id=0; tactical stop after reached, keep dwell context"
+                           : "goal_id=0; tactical stop before reached, clear goal for resume");
+            PublishStatus(stop_reason);
+            PublishDebug(false, stop_reason);
             return;
         }
 
@@ -482,10 +494,13 @@ private:
                     else if (goal_timeout)
                     {
                         active_ = false;
-                        reached_ = false;
+                        reached_ = true;
                         failed_ = true;
+                        canceled_by_tactical_reach_ = true;
                         nav2_status_ = GoalStatus::STATUS_CANCELING;
-                        reason = "goal active timeout; marking stuck and switching goal";
+                        reason =
+                            "goal active timeout; treating current pose as tactical hold, "
+                            "then switching fallback after dwell";
                         if (cancel_nav2_on_active_timeout_ && current_goal_handle_ &&
                             !active_timeout_cancel_requested_)
                         {

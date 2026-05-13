@@ -1,10 +1,13 @@
 #include <filesystem>
+#include <chrono>
 #include <memory>
 #include <sstream>
 #include <string>
 #include <vector>
 
 #include <rclcpp/rclcpp.hpp>
+#include <sensor_msgs/msg/point_cloud2.hpp>
+#include <std_msgs/msg/string.hpp>
 
 #include "bt_compat.hpp"
 #include "bt_setup.hpp"
@@ -37,6 +40,7 @@ const char* PendingPostureToString(const RobotContext& ctx)
 
 std::uint8_t GoalIdToProtocol(const std::string& goal)
 {
+    if (goal == "CURRENT_HOLD") return 0;
     if (goal == "SAFE_HOLD") return 1;
     if (goal == "WAIT_REVIVE") return 2;
     if (goal == "SAFE_RETREAT_A") return 3;
@@ -45,15 +49,8 @@ std::uint8_t GoalIdToProtocol(const std::string& goal)
     if (goal == "SUPPLY_RIGHT") return 6;
     if (goal == "FORTRESS_HOLD") return 7;
     if (goal == "OUTPOST_HOLD") return 8;
-    if (goal == "COMBAT_KITE_A") return 9;
-    if (goal == "COMBAT_HOLD_A") return 10;
-    if (goal == "MID_PRESSURE") return 11;
-    if (goal == "HIGHGROUND_PEEK") return 12;
-    if (goal == "COMBAT_PUSH_A") return 13;
     if (goal == "SEARCH_AREA_A") return 14;
     if (goal == "SEARCH_AREA_B") return 15;
-    if (goal == "HIGHGROUND_SCAN") return 16;
-    if (goal == "HIGHGROUND_CENTER") return 17;
     if (goal == "MID_CROSS") return 18;
     if (goal == "BASE_HOME") return 19;
     if (goal == "BASE_HOLD") return 20;
@@ -137,6 +134,13 @@ void AppendReason(std::ostringstream& oss, const std::string& label, const std::
     }
     oss << label << "=" << value;
 }
+
+std::uint64_t SteadyNowMs()
+{
+    const auto now = std::chrono::steady_clock::now().time_since_epoch();
+    return static_cast<std::uint64_t>(
+        std::chrono::duration_cast<std::chrono::milliseconds>(now).count());
+}
 }  // namespace
 
 class SentryBtNode : public rclcpp::Node
@@ -175,6 +179,10 @@ public:
                 "autoaim_target_status_topic", "/autoaim/target_status");
         const std::string nav_status_topic =
             this->declare_parameter<std::string>("nav_status_topic", "/sentry/nav_status");
+        const std::string main_lidar_topic =
+            this->declare_parameter<std::string>("main_lidar_topic", "/cloud_registered");
+        const std::string safety_debug_topic =
+            this->declare_parameter<std::string>("safety_debug_topic", "/second_lidar_safety_debug");
         const std::string hold_reached_posture =
             this->declare_parameter<std::string>("hold_reached_posture", "DEFENSE");
         const bool enable_bt_file_log =
@@ -183,10 +191,42 @@ public:
             this->declare_parameter<std::string>("btlog_path", "/tmp/sentry_bt.btlog");
         const bool enable_groot_zmq =
             this->declare_parameter<bool>("enable_groot_zmq", false);
+        const auto rfid_base_bits =
+            this->declare_parameter<std::vector<int64_t>>(
+                "rfid.base_bits", std::vector<int64_t>{0});
+        const auto rfid_supply_bits =
+            this->declare_parameter<std::vector<int64_t>>(
+                "rfid.supply_bits", std::vector<int64_t>{19, 20});
+        const auto rfid_fortress_bits =
+            this->declare_parameter<std::vector<int64_t>>(
+                "rfid.fortress_bits", std::vector<int64_t>{17});
+        const auto rfid_outpost_bits =
+            this->declare_parameter<std::vector<int64_t>>(
+                "rfid.outpost_bits", std::vector<int64_t>{18});
+        const auto rfid_highground_bits =
+            this->declare_parameter<std::vector<int64_t>>(
+                "rfid.highground_bits", std::vector<int64_t>{1, 2, 3, 4, 9, 10, 11, 12});
+        const auto rfid_base_bits_2 =
+            this->declare_parameter<std::vector<int64_t>>(
+                "rfid.base_bits_2", std::vector<int64_t>{});
+        const auto rfid_supply_bits_2 =
+            this->declare_parameter<std::vector<int64_t>>(
+                "rfid.supply_bits_2", std::vector<int64_t>{});
+        const auto rfid_fortress_bits_2 =
+            this->declare_parameter<std::vector<int64_t>>(
+                "rfid.fortress_bits_2", std::vector<int64_t>{});
+        const auto rfid_outpost_bits_2 =
+            this->declare_parameter<std::vector<int64_t>>(
+                "rfid.outpost_bits_2", std::vector<int64_t>{});
+        const auto rfid_highground_bits_2 =
+            this->declare_parameter<std::vector<int64_t>>(
+                "rfid.highground_bits_2", std::vector<int64_t>{});
+        ctx_->require_recovery_buff_for_confirm =
+            this->declare_parameter<bool>("recovery.require_recovery_buff_for_confirm", false);
         ctx_->hp_resupply_enter_ratio = static_cast<float>(
-            this->declare_parameter<double>("hp_resupply_enter_ratio", 0.35));
+            this->declare_parameter<double>("hp_resupply_enter_ratio", 0.60));
         ctx_->hp_resupply_exit_ratio = static_cast<float>(
-            this->declare_parameter<double>("hp_resupply_exit_ratio", 0.60));
+            this->declare_parameter<double>("hp_resupply_exit_ratio", 0.85));
         ctx_->ammo_resupply_enter_count =
             this->declare_parameter<int>("ammo_resupply_enter_count", 80);
         ctx_->ammo_resupply_exit_count =
@@ -204,15 +244,22 @@ public:
                                  "resupply_candidate_switch_cooldown_ms", 1500)));
         ctx_->resupply_candidates = this->declare_parameter<std::vector<std::string>>(
             "resupply_candidates", std::vector<std::string>{
-                                       "SUPPLY_LEFT", "SUPPLY_RIGHT", "BASE_HOME"});
+                                       "SUPPLY_LEFT", "SUPPLY_RIGHT"});
         if (!ctx_->resupply_candidates.empty())
         {
             ctx_->resupply_goal_current = ctx_->resupply_candidates.front();
         }
+        ctx_->patrol_goals = this->declare_parameter<std::vector<std::string>>(
+            "patrol_goals",
+            std::vector<std::string>{"SEARCH_AREA_B", "MID_CROSS", "SEARCH_AREA_A"});
+        if (ctx_->patrol_goals.empty())
+        {
+            ctx_->patrol_goals = {"SEARCH_AREA_B", "MID_CROSS", "SEARCH_AREA_A"};
+        }
         ctx_->dead_return_home_enabled =
             this->declare_parameter<bool>("dead_return_home_enabled", true);
         ctx_->dead_return_goal =
-            this->declare_parameter<std::string>("dead_return_goal", "BASE_HOME");
+            this->declare_parameter<std::string>("dead_return_goal", "SUPPLY_LEFT");
         ctx_->dead_return_rfid_confirm_hold_ms = static_cast<std::uint64_t>(
             std::max<int>(0, this->declare_parameter<int>(
                                  "dead_return_rfid_confirm_hold_ms", 300)));
@@ -220,16 +267,58 @@ public:
             this->declare_parameter<double>("dead_full_hp_exit_ratio", 0.98));
         ctx_->dead_return_no_timeout =
             this->declare_parameter<bool>("dead_return_no_timeout", true);
+        ctx_->tactical_state_min_hold_ms = static_cast<std::uint64_t>(
+            std::max<int>(0, this->declare_parameter<int>("tactical_state_min_hold_ms", 3000)));
+        ctx_->internal_motion_min_hold_ms = static_cast<std::uint64_t>(
+            std::max<int>(0, this->declare_parameter<int>("internal_motion_min_hold_ms", 3000)));
         ctx_->goal_dwell_default_ms = static_cast<std::uint64_t>(
-            std::max<int>(0, this->declare_parameter<int>("goal_dwell_default_ms", 1500)));
+            std::max<int>(0, this->declare_parameter<int>("goal_dwell_default_ms", 12000)));
         ctx_->goal_dwell_search_ms = static_cast<std::uint64_t>(
-            std::max<int>(0, this->declare_parameter<int>("goal_dwell_search_ms", 2500)));
+            std::max<int>(0, this->declare_parameter<int>("goal_dwell_search_ms", 12000)));
         ctx_->goal_dwell_hold_ms = static_cast<std::uint64_t>(
-            std::max<int>(0, this->declare_parameter<int>("goal_dwell_hold_ms", 3000)));
+            std::max<int>(0, this->declare_parameter<int>("goal_dwell_hold_ms", 12000)));
         ctx_->goal_dwell_resupply_ms = static_cast<std::uint64_t>(
             std::max<int>(0, this->declare_parameter<int>("goal_dwell_resupply_ms", 0)));
         ctx_->goal_dwell_engage_ms = static_cast<std::uint64_t>(
             std::max<int>(0, this->declare_parameter<int>("goal_dwell_engage_ms", 0)));
+        ctx_->spin_hysteresis_enabled =
+            this->declare_parameter<bool>("spin_hysteresis_enabled", true);
+        ctx_->spin_on_confirm_ms = static_cast<std::uint64_t>(
+            std::max<int>(0, this->declare_parameter<int>("spin_on_confirm_ms", 0)));
+        ctx_->spin_off_confirm_ms = static_cast<std::uint64_t>(
+            std::max<int>(0, this->declare_parameter<int>("spin_off_confirm_ms", 0)));
+        ctx_->spin_min_on_ms = static_cast<std::uint64_t>(
+            std::max<int>(0, this->declare_parameter<int>("spin_min_on_ms", 0)));
+        ctx_->spin_min_off_ms = static_cast<std::uint64_t>(
+            std::max<int>(0, this->declare_parameter<int>("spin_min_off_ms", 0)));
+        ctx_->spin_target_hold_ms = static_cast<std::uint64_t>(
+            std::max<int>(0, this->declare_parameter<int>("spin_target_hold_ms", 5000)));
+        ctx_->spin_under_attack_hold_ms = static_cast<std::uint64_t>(
+            std::max<int>(0, this->declare_parameter<int>("spin_under_attack_hold_ms", 5000)));
+        ctx_->spin_hp_drop_threshold =
+            std::max<int>(0, this->declare_parameter<int>("spin_hp_drop_threshold", 0));
+        ctx_->spin_hp_drop_triggers_under_attack =
+            this->declare_parameter<bool>("spin_hp_drop_triggers_under_attack", false);
+        ctx_->engage_target_max_distance_m = static_cast<float>(
+            this->declare_parameter<double>("engage_target_max_distance_m", 7.0));
+        ctx_->fire_policy_hysteresis_enabled =
+            this->declare_parameter<bool>("fire_policy_hysteresis_enabled", true);
+        ctx_->fire_policy_on_confirm_ms = static_cast<std::uint64_t>(
+            std::max<int>(0, this->declare_parameter<int>("fire_policy_on_confirm_ms", 150)));
+        ctx_->fire_policy_off_confirm_ms = static_cast<std::uint64_t>(
+            std::max<int>(0, this->declare_parameter<int>("fire_policy_off_confirm_ms", 800)));
+        ctx_->fire_policy_min_on_ms = static_cast<std::uint64_t>(
+            std::max<int>(0, this->declare_parameter<int>("fire_policy_min_on_ms", 1500)));
+        ctx_->fire_policy_min_off_ms = static_cast<std::uint64_t>(
+            std::max<int>(0, this->declare_parameter<int>("fire_policy_min_off_ms", 500)));
+        ctx_->fire_policy_target_hold_ms = static_cast<std::uint64_t>(
+            std::max<int>(0, this->declare_parameter<int>("fire_policy_target_hold_ms", 1200)));
+        ctx_->main_lidar_timeout_ms = static_cast<std::uint64_t>(
+            std::max<int>(1, this->declare_parameter<int>("main_lidar_timeout_ms", 500)));
+        ctx_->safety_debug_timeout_ms = static_cast<std::uint64_t>(
+            std::max<int>(1, this->declare_parameter<int>("safety_debug_timeout_ms", 500)));
+        ctx_->safety_collision_interrupt_ms = static_cast<std::uint64_t>(
+            std::max<int>(0, this->declare_parameter<int>("safety_collision_interrupt_ms", 2500)));
 
         referee_.ConfigurePostureTiming(
             posture_switch_cooldown_ms, posture_feedback_stable_ms);
@@ -238,6 +327,10 @@ public:
         referee_.ConfigureInputFreshness(status_timeout_ms, enemy_memory_ms);
         referee_.ConfigureSimInput(enable_sim_input_, sim_input_timeout_ms);
         referee_.ConfigureDecisionStatusInputs(autoaim_status_timeout_ms, nav_status_timeout_ms);
+        referee_.ConfigureRfidBits(
+            rfid_base_bits, rfid_supply_bits, rfid_fortress_bits, rfid_outpost_bits,
+            rfid_highground_bits, rfid_base_bits_2, rfid_supply_bits_2,
+            rfid_fortress_bits_2, rfid_outpost_bits_2, rfid_highground_bits_2);
         Posture parsed_hold_reached_posture = Posture::DEFENSE;
         if (ParsePosture(hold_reached_posture, parsed_hold_reached_posture))
         {
@@ -281,6 +374,30 @@ public:
             nav_status_topic, rclcpp::SensorDataQoS(),
             [this](const rm_interfaces::msg::SentryNavStatus::SharedPtr msg) {
                 referee_.UpdateFromNavStatus(*msg);
+            });
+        main_lidar_sub_ = this->create_subscription<sensor_msgs::msg::PointCloud2>(
+            main_lidar_topic, rclcpp::SensorDataQoS(),
+            [this](const sensor_msgs::msg::PointCloud2::SharedPtr) {
+                std::lock_guard<std::mutex> lock(ctx_->mtx);
+                ctx_->main_lidar_seen = true;
+                ctx_->main_lidar_last_seen_ms = SteadyNowMs();
+            });
+        safety_debug_sub_ = this->create_subscription<std_msgs::msg::String>(
+            safety_debug_topic, rclcpp::QoS(10),
+            [this](const std_msgs::msg::String::SharedPtr msg) {
+                std::lock_guard<std::mutex> lock(ctx_->mtx);
+                ctx_->safety_debug_seen = true;
+                ctx_->safety_debug_last_seen_ms = SteadyNowMs();
+                ctx_->safety_emergency_active =
+                    msg->data.find("emergency_any=true") != std::string::npos;
+                ctx_->safety_obstacle_timeout =
+                    msg->data.find("obstacle_timeout=true") != std::string::npos;
+                if (ctx_->safety_emergency_active)
+                {
+                    ctx_->safety_interrupt_last_seen_ms = ctx_->safety_debug_last_seen_ms;
+                    ctx_->safety_interrupt_reason =
+                        "第二雷达 safety emergency，保持正常目标规划并交给导航避障/超时切点。";
+                }
             });
 
         if (enable_sim_input_)
@@ -588,6 +705,8 @@ private:
     rclcpp::Subscription<rm_interfaces::msg::AutoaimTargetStatus>::SharedPtr
         autoaim_target_status_sub_{};
     rclcpp::Subscription<rm_interfaces::msg::SentryNavStatus>::SharedPtr nav_status_sub_{};
+    rclcpp::Subscription<sensor_msgs::msg::PointCloud2>::SharedPtr main_lidar_sub_{};
+    rclcpp::Subscription<std_msgs::msg::String>::SharedPtr safety_debug_sub_{};
     rclcpp::Publisher<rm_interfaces::msg::SentryDecisionDebug>::SharedPtr debug_pub_{};
     rclcpp::Publisher<rm_interfaces::msg::SentryIntent>::SharedPtr intent_pub_{};
     rclcpp::TimerBase::SharedPtr tick_timer_{};

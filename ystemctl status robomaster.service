@@ -1,0 +1,5 @@
+○ robomaster.service - RoboMaster Auto Aim and Navigation System
+     Loaded: loaded (/etc/systemd/system/robomaster.service; disabled; vendor preset: enabled)
+     Active: inactive (dead)
+
+5月 12 23:26:05 rm-Default-string systemd[1]: [0;1;38;5;185m[0;1;39m[0;1;38;5;185m/etc/systemd/system/robomaster.service:25: Unknown key name 'StartLimitIntervalSec' in section 'Service', ignoring.[0m

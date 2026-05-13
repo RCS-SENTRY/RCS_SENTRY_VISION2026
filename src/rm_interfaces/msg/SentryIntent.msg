@@ -45,10 +45,11 @@ uint8 goal_id
 uint8 posture_intent
 
 # fire_policy:
-# 0=HOLD_FIRE
-# 1=CONSERVATIVE
-# 2=NORMAL
-# 3=AGGRESSIVE
+# Decision-side autoaim switch, not the autoaim stack's internal fire level.
+# 0=HARD_OFF / no valid intent
+# 1=AUTOAIM_OFF
+# 2=AUTOAIM_ON
+# 3=AUTOAIM_ON_RESERVED
 uint8 fire_policy
 
 # spin_mode:

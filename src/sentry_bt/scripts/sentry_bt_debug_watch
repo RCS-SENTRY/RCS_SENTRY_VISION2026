@@ -53,10 +53,10 @@ RULE_ACTION_NAMES = {
 }
 
 FIRE_POLICY_NAMES = {
-    0: "HOLD_FIRE",
-    1: "CONSERVATIVE",
-    2: "NORMAL",
-    3: "AGGRESSIVE",
+    0: "HARD_OFF",
+    1: "AUTOAIM_OFF",
+    2: "AUTOAIM_ON",
+    3: "AUTOAIM_ON_RESERVED",
 }
 
 SPIN_MODE_NAMES = {
@@ -183,7 +183,7 @@ HISTORY_TOKEN_MAPPINGS: Dict[str, Dict[Any, str]] = {
     "posture_cmd_referee": {0: ".", 1: "A", 2: "D", 3: "M"},
     "tactical_state": {0: ".", 1: "H", 2: "E", 3: "R", 4: "U", 5: "S", 6: "P", 7: "N"},
     "rule_action_type": {0: ".", 1: "X", 2: "A", 3: "H", 4: "F", 5: "I", 6: "P", 7: "E"},
-    "fire_policy": {0: "H", 1: "C", 2: "N", 3: "A"},
+    "fire_policy": {0: "H", 1: ".", 2: "A", 3: "R"},
     "spin_mode": {0: ".", 1: "S"},
     "supercap_mode": {0: ".", 1: "K", 2: "B"},
     "enemy_in_view": {False: ".", True: "E"},

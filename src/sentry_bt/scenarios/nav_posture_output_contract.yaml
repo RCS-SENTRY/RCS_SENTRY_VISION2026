@@ -1,0 +1,191 @@
+defaults:
+  match_started: true
+  referee_link_fresh: true
+  sim_input_fresh: true
+  hp: 400
+  hp_max: 400
+  heat: 0
+  heat_limit: 260
+  ammo_17: 200
+  gold: 400
+  team_17mm_exchange_remain: 1000
+  stage_remain_time: 420
+  is_disengaged: true
+  supercap_soc: 0.50
+  current_posture: MOVE
+  reported_posture: MOVE
+  now_ms: 10000
+
+cases:
+  - name: moving_to_patrol_point_forces_move_outputs
+    context:
+      on_highground: true
+      nav_goal_active: true
+      nav_goal_reached: false
+      current_goal_id: 15
+      enemy_in_view: false
+      enemy_confidence: 0.0
+      enemy_distance_m: 12.0
+    expected:
+      tactical_state: SEARCH
+      desired_goal: SEARCH_AREA_B
+      desired_posture: MOVE
+      fire_policy: AUTOAIM_OFF
+      spin_mode: OFF
+      supercap_mode: OFF
+
+  - name: moving_preempts_latched_defense_to_keep_spin_off
+    context:
+      on_highground: true
+      nav_goal_active: true
+      nav_goal_reached: false
+      current_goal_id: 15
+      internal_motion_initialized: true
+      internal_motion_latched: DEFENSE
+      internal_motion_last_change_ms: 9000
+      enemy_in_view: false
+      enemy_confidence: 0.0
+      enemy_distance_m: 12.0
+    expected:
+      tactical_state: SEARCH
+      desired_goal: SEARCH_AREA_B
+      desired_posture: MOVE
+      fire_policy: AUTOAIM_OFF
+      spin_mode: OFF
+      supercap_mode: OFF
+
+  - name: close_target_preempts_navigation_for_attack_hold
+    context:
+      on_highground: true
+      nav_goal_active: true
+      nav_goal_reached: false
+      current_goal_id: 15
+      enemy_in_view: true
+      enemy_confidence: 0.95
+      enemy_distance_m: 5.0
+      is_disengaged: false
+    expected:
+      tactical_state: ENGAGE
+      desired_goal: CURRENT_HOLD
+      desired_posture: ATTACK
+      fire_policy: AUTOAIM_ON
+      spin_mode: ON
+      supercap_mode: BURST
+
+  - name: target_loss_keeps_attack_output_for_min_hold
+    context:
+      on_highground: true
+      nav_goal_active: false
+      nav_goal_reached: false
+      internal_motion_initialized: true
+      internal_motion_latched: ATTACK
+      internal_motion_last_change_ms: 9000
+      enemy_in_view: false
+      enemy_confidence: 0.0
+      enemy_distance_m: 12.0
+    expected:
+      tactical_state: SEARCH
+      desired_goal: SEARCH_AREA_B
+      desired_posture: ATTACK
+      fire_policy: AUTOAIM_ON
+      spin_mode: ON
+      supercap_mode: BURST
+
+  - name: target_loss_after_min_hold_returns_to_nav
+    context:
+      on_highground: true
+      nav_goal_active: false
+      nav_goal_reached: false
+      internal_motion_initialized: true
+      internal_motion_latched: ATTACK
+      internal_motion_last_change_ms: 6000
+      enemy_in_view: false
+      enemy_confidence: 0.0
+      enemy_distance_m: 12.0
+    expected:
+      tactical_state: SEARCH
+      desired_goal: SEARCH_AREA_B
+      desired_posture: MOVE
+      fire_policy: AUTOAIM_OFF
+      spin_mode: OFF
+      supercap_mode: OFF
+
+  - name: target_loss_after_min_hold_at_dwell_returns_to_defense
+    context:
+      on_highground: true
+      nav_goal_active: false
+      nav_goal_reached: true
+      current_goal_id: 15
+      dwell_goal_id: 15
+      dwell_active: true
+      dwell_complete: false
+      dwell_required_ms: 12000
+      dwell_remaining_ms: 9000
+      internal_motion_initialized: true
+      internal_motion_latched: ATTACK
+      internal_motion_last_change_ms: 6000
+      enemy_in_view: false
+      enemy_confidence: 0.0
+      enemy_distance_m: 12.0
+    expected:
+      tactical_state: SEARCH
+      desired_goal: SEARCH_AREA_B
+      desired_posture: DEFENSE
+      fire_policy: AUTOAIM_ON
+      spin_mode: ON
+      supercap_mode: BURST
+
+  - name: resupply_internal_state_maps_to_move_outputs
+    context:
+      hp: 120
+      hp_max: 400
+      nav_goal_active: true
+      nav_goal_reached: false
+      current_goal_id: 5
+      enemy_in_view: false
+      enemy_confidence: 0.0
+      enemy_distance_m: 12.0
+    expected:
+      tactical_state: RESUPPLY
+      desired_posture: MOVE
+      fire_policy: AUTOAIM_OFF
+      spin_mode: OFF
+      supercap_mode: OFF
+
+  - name: retreat_internal_state_maps_to_move_outputs
+    context:
+      heat: 250
+      heat_limit: 260
+      nav_goal_active: true
+      nav_goal_reached: false
+      current_goal_id: 3
+      enemy_in_view: false
+      enemy_confidence: 0.0
+      enemy_distance_m: 12.0
+    expected:
+      tactical_state: RETREAT
+      desired_posture: MOVE
+      fire_policy: AUTOAIM_OFF
+      spin_mode: OFF
+      supercap_mode: OFF
+
+  - name: reached_patrol_point_enters_defense_outputs
+    context:
+      on_highground: true
+      nav_goal_active: false
+      nav_goal_reached: true
+      current_goal_id: 15
+      dwell_active: true
+      dwell_complete: false
+      dwell_required_ms: 12000
+      dwell_remaining_ms: 9000
+      enemy_in_view: false
+      enemy_confidence: 0.0
+      enemy_distance_m: 12.0
+    expected:
+      tactical_state: SEARCH
+      desired_goal: SEARCH_AREA_B
+      desired_posture: DEFENSE
+      fire_policy: AUTOAIM_ON
+      spin_mode: ON
+      supercap_mode: BURST
