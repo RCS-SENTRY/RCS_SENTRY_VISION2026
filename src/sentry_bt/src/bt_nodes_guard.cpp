@@ -185,11 +185,7 @@ public:
             return BT::NodeStatus::FAILURE;
         }
 
-        const float hp_ratio = SafeRatio(ctx_->hp, ctx_->hp_max);
-        const bool need_safety = !ctx_->referee_link_fresh || ctx_->heat_guard_active ||
-                                 ctx_->power_guard_active ||
-                                 ctx_->supercap_guard_active ||
-                                 ((hp_ratio < 0.20f) && ctx_->enemy_in_view);
+        const bool need_safety = !ctx_->referee_link_fresh;
 
         ctx_->need_emergency_safety = need_safety;
         if (need_safety)

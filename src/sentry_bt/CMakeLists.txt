@@ -32,7 +32,6 @@ set(SENTRY_BT_SOURCES
     src/bt_nodes_executor.cpp
     src/bt_setup.cpp
     src/referee_interface.cpp
-    src/llm_interface.cpp
 )
 
 add_executable(sentry_bt

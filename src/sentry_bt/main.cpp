@@ -11,7 +11,6 @@
 
 #include "bt_compat.hpp"
 #include "bt_setup.hpp"
-#include "llm_interface.hpp"
 #include "referee_interface.hpp"
 #include "rm_interfaces/msg/autoaim_target_status.hpp"
 #include "rm_interfaces/msg/sentry_decision_debug.hpp"
@@ -271,6 +270,19 @@ public:
             std::max<int>(0, this->declare_parameter<int>("tactical_state_min_hold_ms", 3000)));
         ctx_->internal_motion_min_hold_ms = static_cast<std::uint64_t>(
             std::max<int>(0, this->declare_parameter<int>("internal_motion_min_hold_ms", 3000)));
+        ctx_->posture_candidate_confirm_ms = static_cast<std::uint64_t>(
+            std::max<int>(0, this->declare_parameter<int>("posture_candidate_confirm_ms", 1000)));
+        ctx_->posture_min_hold_ms = static_cast<std::uint64_t>(
+            std::max<int>(0, this->declare_parameter<int>("posture_min_hold_ms", 5000)));
+        ctx_->attack_enter_confirm_ms = static_cast<std::uint64_t>(
+            std::max<int>(0, this->declare_parameter<int>("attack_enter_confirm_ms", 150)));
+        ctx_->defense_enter_confirm_ms = static_cast<std::uint64_t>(
+            std::max<int>(0, this->declare_parameter<int>("defense_enter_confirm_ms", 1000)));
+        ctx_->move_enter_confirm_ms = static_cast<std::uint64_t>(
+            std::max<int>(0, this->declare_parameter<int>("move_enter_confirm_ms", 300)));
+        ctx_->nav_goal_timeout_as_temp_defense_ms = static_cast<std::uint64_t>(
+            std::max<int>(0, this->declare_parameter<int>(
+                                 "nav_goal_timeout_as_temp_defense_ms", 12000)));
         ctx_->goal_dwell_default_ms = static_cast<std::uint64_t>(
             std::max<int>(0, this->declare_parameter<int>("goal_dwell_default_ms", 12000)));
         ctx_->goal_dwell_search_ms = static_cast<std::uint64_t>(
@@ -679,7 +691,6 @@ private:
         }
 
         referee_.SyncToContext(*ctx_);
-        llm_.Update(*ctx_);
         TickRootOnceCompat(*tree_);
         referee_.ObserveDecisionOutput(*ctx_);
         {
@@ -698,7 +709,6 @@ private:
     BT::BehaviorTreeFactory factory_{};
     std::shared_ptr<RobotContext> ctx_{};
     RefereeInterface referee_{};
-    LLMInterface llm_{};
     std::unique_ptr<BT::Tree> tree_{};
     rclcpp::Subscription<rm_interfaces::msg::GimbalStatus>::SharedPtr gimbal_status_sub_{};
     rclcpp::Subscription<rm_interfaces::msg::SentrySimInput>::SharedPtr sim_input_sub_{};

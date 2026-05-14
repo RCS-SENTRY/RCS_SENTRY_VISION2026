@@ -360,7 +360,7 @@ private:
         {
             out.spin_mode = 1;
         }
-        if (out.spin_mode != 0)
+        if (out.spin_mode != 0 && !intent_fresh)
         {
             out.supercap_mode = 2;
         }

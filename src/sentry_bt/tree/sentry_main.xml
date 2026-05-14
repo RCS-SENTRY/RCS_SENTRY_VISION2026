@@ -88,7 +88,7 @@
             <EvaluateRetreatGoals/>
             <ChooseBestGoal/>
             <SetPreferredPosture posture="MOVE"/>
-            <SetPreferredFirePolicy fire_policy="HOLD_FIRE"/>
+            <SetPreferredFirePolicy fire_policy="NORMAL"/>
             <SetSituationalSpinPreference/>
             <SetPreferredSupercapMode supercap_mode="BURST"/>
         </Sequence>
@@ -132,7 +132,7 @@
             <EvaluateSearchGoals/>
             <ChooseBestGoal/>
             <SetPreferredPosture posture="MOVE"/>
-            <SetPreferredFirePolicy fire_policy="CONSERVATIVE"/>
+            <SetPreferredFirePolicy fire_policy="NORMAL"/>
             <SetSituationalSpinPreference/>
             <SetPreferredSupercapMode supercap_mode="OFF"/>
         </Sequence>
@@ -143,7 +143,7 @@
             <EvaluateRepositionGoals/>
             <ChooseBestGoal/>
             <SetPreferredPosture posture="MOVE"/>
-            <SetPreferredFirePolicy fire_policy="CONSERVATIVE"/>
+            <SetPreferredFirePolicy fire_policy="NORMAL"/>
             <SetSituationalSpinPreference/>
             <SetPreferredSupercapMode supercap_mode="BURST"/>
         </Sequence>

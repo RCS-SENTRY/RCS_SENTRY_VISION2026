@@ -24,6 +24,8 @@ while true; do
     enable_sentry_command_mux:=true \
     enable_sentry_goal_executor:=true \
     enable_sentry_mission_runner:=false \
+    sentry_goals_file:="$WORKDIR/src/rm_sentry_decision/config/sentry_goals.yaml" \
+    sentry_bt_params_file:="$WORKDIR/src/sentry_bt/config/sentry_bt_params.yaml" \
     enable_second_lidar_safety:=true \
     slam:=False \
     initial_pose_yaw:=2.15 \

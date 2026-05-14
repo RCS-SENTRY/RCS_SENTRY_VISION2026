@@ -216,6 +216,20 @@ struct RobotContext
     std::uint64_t internal_motion_last_change_ms{0};
     std::uint64_t internal_motion_min_hold_ms{3000};
 
+    // 裁判系统姿态候选与锁存。posture 只表达裁判姿态收益，不反向控制 nav/fire/spin。
+    Posture posture_candidate{Posture::MOVE};
+    std::uint64_t posture_candidate_since_ms{0};
+    std::uint64_t posture_candidate_confirm_ms{1000};
+    std::uint64_t posture_min_hold_ms{5000};
+    std::uint64_t attack_enter_confirm_ms{150};
+    std::uint64_t defense_enter_confirm_ms{1000};
+    std::uint64_t move_enter_confirm_ms{300};
+    std::uint64_t nav_goal_timeout_as_temp_defense_ms{12000};
+    std::uint64_t nav_goal_active_since_ms{0};
+    std::uint8_t nav_goal_active_tracked_id{0};
+    std::uint64_t autoaim_tracking_since_ms{0};
+    std::uint64_t autoaim_fire_ready_since_ms{0};
+
     // 旁路建议信号。
     // 战术层可以把它作为软参考，但优先级始终低于硬约束和显式规则动作。
     LLMAdvice llm_advice{};

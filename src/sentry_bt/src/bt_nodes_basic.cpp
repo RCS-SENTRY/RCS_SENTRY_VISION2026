@@ -212,6 +212,45 @@ public:
         ctx_->need_supply = ctx_->resupply_active;
         ctx_->need_emergency_safety = !ctx_->referee_link_fresh;
         ctx_->need_rule_action = false;
+
+        if (ctx_->nav_goal_active && ctx_->current_goal_id != 0)
+        {
+            if (ctx_->nav_goal_active_since_ms == 0 ||
+                ctx_->nav_goal_active_tracked_id != ctx_->current_goal_id ||
+                ctx_->nav_goal_reached)
+            {
+                ctx_->nav_goal_active_since_ms = ctx_->now_ms;
+                ctx_->nav_goal_active_tracked_id = ctx_->current_goal_id;
+            }
+        }
+        else
+        {
+            ctx_->nav_goal_active_since_ms = 0;
+            ctx_->nav_goal_active_tracked_id = 0;
+        }
+
+        if (ctx_->autoaim_tracking)
+        {
+            if (ctx_->autoaim_tracking_since_ms == 0)
+            {
+                ctx_->autoaim_tracking_since_ms = ctx_->now_ms;
+            }
+        }
+        else
+        {
+            ctx_->autoaim_tracking_since_ms = 0;
+        }
+        if (ctx_->autoaim_fire_ready)
+        {
+            if (ctx_->autoaim_fire_ready_since_ms == 0)
+            {
+                ctx_->autoaim_fire_ready_since_ms = ctx_->now_ms;
+            }
+        }
+        else
+        {
+            ctx_->autoaim_fire_ready_since_ms = 0;
+        }
         const bool first_lidar_problem =
             !ctx_->main_lidar_seen ||
             (ctx_->main_lidar_last_seen_ms != 0 &&
@@ -373,17 +412,8 @@ public:
                 }
             }
         }
-        if (ctx_->nav_goal_failed && !ctx_->dwell_active &&
-            ctx_->current_goal_id != 0 && !ctx_->is_dead && !ctx_->need_supply)
-        {
-            const auto patrol_goal = CurrentPatrolGoal(*ctx_);
-            if (GoalNameToProtocolId(patrol_goal) == ctx_->current_goal_id &&
-                ctx_->patrol_last_advanced_goal_id != ctx_->current_goal_id)
-            {
-                ctx_->patrol_last_advanced_goal_id = ctx_->current_goal_id;
-                AdvancePatrolGoal(*ctx_, "当前巡航点导航失败且没有进入 dwell");
-            }
-        }
+        // 普通导航失败/避障重规划不再推进巡航点，也不关闭自瞄/小陀螺。
+        // 到点超时由姿态层当作临时防守候选处理，补给候选切换仍在 resupply 子树内完成。
         ctx_->last_seen_nav_goal_id = ctx_->current_goal_id;
         ctx_->last_nav_goal_reached = ctx_->nav_goal_reached;
 

@@ -23,9 +23,9 @@ public:
 
     explicit NavInterface(rclcpp::Node& node);
 
-    // 将行为树的抽象 goal 收敛成底盘速度指令。
-    // 当前版本采用可配置的启发式速度表，保证没有完整定位/路径规划时也能形成闭环；
-    // 后续若接入正式导航模块，可保持 BT 输出不变，只替换这里的 goal 执行器。
+    // Fake/debug only: 将行为树 goal 粗略映射成 NavCmd，便于无导航栈台架联调。
+    // 比赛正式链路禁止使用该输出；正式运行必须只消费 /sentry/intent 的 goal_id，
+    // 速度完全由导航栈、速度控制层和双雷达避障链决定。
     void PublishCommand(RobotContext& ctx);
 
     const GoalCommand& last_command() const;
@@ -37,6 +37,7 @@ private:
     GoalCommand last_command_{};
     rm_interfaces::msg::NavCmd last_nav_msg_{};
     std::string output_topic_{};
+    bool enable_debug_nav_cmd_{false};
     double linear_speed_{0.75};
     double strafe_speed_{0.55};
     double retreat_speed_{0.70};
