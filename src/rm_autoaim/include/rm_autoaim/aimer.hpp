@@ -34,11 +34,11 @@ struct AimerParams
   bool use_dynamic_fire_window = true;
   double shooting_range_width = 0.135;
   double shooting_range_height = 0.055;
-  double min_fire_window_deg = 1.0;
-  double max_fire_window_deg = 3.0;
+  double min_fire_window_deg = 1.5;
+  double max_fire_window_deg = 4.0;
 
-  int fire_min_frames = 3;
-  double fire_max_distance = 8.0;
+  int fire_min_frames = 2;
+  double fire_max_distance = 10.0;
 };
 
 class Aimer

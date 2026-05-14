@@ -20,7 +20,7 @@ rm_vision_detector:
     # ===== 推理阈值（越高越严格，越低越灵敏） =====
     score_threshold: 0.12                 # YOLO 首轮置信度（调低排查 raw=0）
     nms_threshold: 0.45                 # NMS 重叠框合并
-    confidence_threshold: 0.12            # 最终输出门槛（调低排查 raw=0）
+    confidence_threshold: 0.12           # 最终输出门槛（调低排查 raw=0）
 
     # ===== 敌我颜色（比赛前必查！） =====
     # prefer_referee_robot_id=true 时:

@@ -35,21 +35,16 @@ std::int8_t PostureIntentToStateSwitch(std::uint8_t posture_intent,
                                        const rm_interfaces::msg::GimbalCmd& autoaim_raw,
                                        int default_posture)
 {
-    if (autoaim_raw.mode == 1 && autoaim_raw.state_switch != 0)
-    {
-        return autoaim_raw.state_switch;
-    }
+    (void)autoaim_raw;
     switch (posture_intent)
     {
-        case kPostureKeep:
-            return autoaim_raw.state_switch != 0 ? autoaim_raw.state_switch
-                                                 : static_cast<std::int8_t>(default_posture);
         case kPostureMove:
             return 1;
         case kPostureAttack:
             return 2;
         case kPostureDefense:
             return 3;
+        case kPostureKeep:
         default:
             return static_cast<std::int8_t>(default_posture);
     }
@@ -92,6 +87,8 @@ public:
             declare_parameter<bool>("hold_angles_from_gimbal_status", true);
         spin_mux_hold_sec_ =
             std::max(0.0, declare_parameter<double>("spin_mux_hold_sec", 5.0));
+        fire_hold_sec_ =
+            std::max(0.0, declare_parameter<double>("fire_hold_sec", 0.5));
         enable_spin_stop_on_lidar_timeout_ =
             declare_parameter<bool>("enable_spin_stop_on_lidar_timeout", true);
         main_lidar_timeout_sec_ =
@@ -183,6 +180,7 @@ private:
 
     bool SafetyOk() const
     {
+        // Shooter/fire safety only: do not add chassis/nav/lidar/spin/goal conditions here.
         if (!has_status_)
         {
             return false;
@@ -251,7 +249,8 @@ private:
             if (has_autoaim_raw_ || has_intent_)
             {
                 rm_interfaces::msg::GimbalCmd out;
-                PublishDebug("idle", intent_fresh, autoaim_fresh, false, false, false, false, out);
+                PublishDebug(
+                    "idle", intent_fresh, autoaim_fresh, false, false, false, false, false, out);
             }
             return;
         }
@@ -262,7 +261,17 @@ private:
                          : allow_fire_without_intent_;
         const bool use_autoaim_raw = autoaim_fresh && decision_enables_autoaim;
         const bool safety_ok = SafetyOk();
-        const bool final_fire = use_autoaim_raw && autoaim_fire && safety_ok;
+        if (use_autoaim_raw && autoaim_fire)
+        {
+            last_autoaim_fire_time_ = now();
+            has_recent_autoaim_fire_ = true;
+        }
+        const bool fire_hold_active =
+            has_recent_autoaim_fire_ &&
+            fire_hold_sec_ > 0.0 &&
+            (now() - last_autoaim_fire_time_).seconds() <= fire_hold_sec_;
+        const bool final_fire =
+            use_autoaim_raw && (autoaim_fire || fire_hold_active) && safety_ok;
 
         rm_interfaces::msg::GimbalCmd out;
         const char* mode = use_autoaim_raw
@@ -372,11 +381,12 @@ private:
 
         cmd_pub_->publish(out);
         PublishDebug(mode, intent_fresh, autoaim_fresh, autoaim_fire, decision_enables_autoaim,
-                     safety_ok, final_fire, out);
+                     safety_ok, final_fire, fire_hold_active, out);
     }
 
     void PublishDebug(const std::string& mode, bool intent_fresh, bool autoaim_fresh, bool autoaim_fire,
                       bool decision_enables_autoaim, bool safety_ok, bool final_fire,
+                      bool fire_hold_active,
                       const rm_interfaces::msg::GimbalCmd& out)
     {
         std_msgs::msg::String debug;
@@ -390,6 +400,9 @@ private:
             << " intent_only_heartbeat_enabled="
             << BoolString(enable_intent_only_heartbeat_)
             << " autoaim_fire=" << BoolString(autoaim_fire)
+            << " fire_hold_active=" << BoolString(fire_hold_active)
+            << " fire_hold_sec=" << fire_hold_sec_
+            << " has_recent_autoaim_fire=" << BoolString(has_recent_autoaim_fire_)
             << " decision_enables_autoaim=" << BoolString(decision_enables_autoaim)
             << " decision_fire_policy_autoaim_switch="
             << static_cast<int>(intent_fresh ? last_intent_.fire_policy : kFirePolicyHoldFire)
@@ -436,6 +449,7 @@ private:
     bool enable_intent_only_heartbeat_{true};
     bool hold_angles_from_gimbal_status_{true};
     double spin_mux_hold_sec_{5.0};
+    double fire_hold_sec_{0.08};
     bool enable_spin_stop_on_lidar_timeout_{true};
     bool enable_spin_stop_on_safety_emergency_{true};
     bool spin_stop_on_safety_timeout_{true};
@@ -459,6 +473,7 @@ private:
     rclcpp::Time last_main_lidar_time_{0, 0, get_clock()->get_clock_type()};
     rclcpp::Time last_safety_debug_time_{0, 0, get_clock()->get_clock_type()};
     rclcpp::Time last_spin_on_time_{0, 0, get_clock()->get_clock_type()};
+    rclcpp::Time last_autoaim_fire_time_{0, 0, get_clock()->get_clock_type()};
     bool has_autoaim_raw_{false};
     bool has_intent_{false};
     bool has_status_{false};
@@ -467,6 +482,7 @@ private:
     bool safety_emergency_active_{false};
     bool safety_obstacle_timeout_{false};
     bool spin_mux_latched_{false};
+    bool has_recent_autoaim_fire_{false};
 
     rclcpp::Subscription<rm_interfaces::msg::GimbalCmd>::SharedPtr autoaim_sub_{};
     rclcpp::Subscription<rm_interfaces::msg::SentryIntent>::SharedPtr intent_sub_{};

@@ -1,4 +1,4 @@
-# RCS Sentry Vision 2026
+s# RCS Sentry Vision 2026
 
 # 哨兵上位机最小使用流程
 

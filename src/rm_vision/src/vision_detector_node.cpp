@@ -186,7 +186,7 @@ private:
     BLUE
   };
 
-  static TeamColor team_from_robot_id(uint8_t robot_id)
+  static TeamColor team_from_robot_id(uint8_t robot_id) //enemy distinction
   {
     if (robot_id >= 1 && robot_id <= 11) {
       return TeamColor::RED;
