@@ -1,5 +1,7 @@
-s# RCS Sentry Vision 2026
-
+# RCS Sentry Vision 2026
+特别致谢：
+https://github.com/SMBU-PolarBear-Robotics-Team/pb2025_sentry_nav
+https://github.com/CSU-FYT-Vision/FYT2024_vision
 # 哨兵上位机最小使用流程
 
 这份说明给队内调车人员看。比赛或测试前，必须先完成两件事：
